@@ -1772,5 +1772,16 @@
   "下次约 ": "Next ~",
   "（每 ": " (every ",
   " 分钟）": " min)",
-  " 分钟一轮": "-min cycle"
+  " 分钟一轮": "-min cycle",
+  "积分到期提醒": "Credit expiry reminders",
+  "开启积分过期提醒（面板徽标 + 桌面通知 + 本地日志）": "Enable credit expiry reminders (panel badge + desktop notification + local log)",
+  "提前天数": "Days ahead",
+  "当前 ": "Current ",
+  " 项待提醒": " pending",
+  "暂无需提醒": "Nothing due",
+  "知道了": "Got it",
+  "暂无即将过期的积分（仅对提供到期数据的工具提醒，不猜测）": "No credits expiring soon (only tools that provide expiry data are reminded; no guessing)",
+  " 天开始提醒；「知道了」后该到期时间不再提醒（提前天数与总开关在「设置 → 通用」）。": " days ahead; after \"Got it\" that expiry will not remind again (days-ahead and master switch in Settings > General).",
+  "仅对提供到期数据的工具生效（不猜测）；≤24 小时升级为紧急。每日 09:00 汇总一次，提醒全程不出本机（无邮件）。": "Only applies to tools that provide expiry data (no guessing); escalates to urgent within 24h. Summarized once daily at 09:00; reminders never leave this machine (no email).",
+  "已知道了这条提醒": "Reminder dismissed"
 }

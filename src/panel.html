@@ -325,6 +325,8 @@
   .nav button:hover { color: var(--text); background: var(--hover); }
   .nav button.active { background: var(--btn-bg); color: var(--btn-fg); }
   .nav .cnt { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--tertiary); color: var(--text-3); font-variant-numeric: tabular-nums; }
+  /* 到期提醒红点徽标（F4）：≤24h 的紧急项存在时常亮红色 */
+  .nav .cnt.urgent { background: var(--err); color: #fff; }
   .nav button.active .cnt { background: rgba(255,255,255,.18); color: inherit; }
   html[data-theme="dark"] .nav button.active .cnt { background: rgba(0,0,0,.12); }
   .view { display: none; } .view.active { display: block; }
@@ -492,6 +494,21 @@
                 <div class="hint" data-i18n="无桌面壳时用 Windows 计划任务在登录后自动运行 creditdaddy start（start 幂等，重复触发无副作用）；桌面版也可在托盘菜单设置。">无桌面壳时用 Windows 计划任务在登录后自动运行 creditdaddy start（start 幂等，重复触发无副作用）；桌面版也可在托盘菜单设置。</div>
               </div>
               <div class="field">
+                <label data-i18n="积分到期提醒">积分到期提醒</label>
+                <label class="check"><input type="checkbox" id="cfg-reminder"> <span data-i18n="开启积分过期提醒（面板徽标 + 桌面通知 + 本地日志）">开启积分过期提醒（面板徽标 + 桌面通知 + 本地日志）</span></label>
+                <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+                  <span class="hint" data-i18n="提前天数">提前天数</span>
+                  <select class="input" id="cfg-reminder-days" style="width:auto">
+                    <option value="1">1</option>
+                    <option value="3">3</option>
+                    <option value="7">7</option>
+                    <option value="14">14</option>
+                  </select>
+                  <span class="hint" id="cfg-reminder-state"></span>
+                </div>
+                <div class="hint" data-i18n="仅对提供到期数据的工具生效（不猜测）；≤24 小时升级为紧急。每日 09:00 汇总一次，提醒全程不出本机（无邮件）。">仅对提供到期数据的工具生效（不猜测）；≤24 小时升级为紧急。每日 09:00 汇总一次，提醒全程不出本机（无邮件）。</div>
+              </div>
+              <div class="field">
                 <label data-i18n="WorkBuddy 国际版 活跃请求">WorkBuddy 国际版 活跃请求</label>
                 <label class="check"><input type="checkbox" id="cfg-wb-activity"> <span data-i18n="定期发送活跃请求（保持资格，不保证奖励）">定期发送活跃请求（保持资格，不保证奖励）</span></label>
                 <div class="hint" data-i18n="关闭后本机不再对国际版账号自动/手动发活跃请求;卡片与仪表盘的「活跃」入口一同隐藏。">关闭后本机不再对国际版账号自动/手动发活跃请求;卡片与仪表盘的「活跃」入口一同隐藏。</div>
@@ -569,7 +586,7 @@
   </header>
 
   <nav class="nav" id="nav">
-    <button data-view="dash" class="active" data-i18n="仪表盘">仪表盘</button>
+    <button data-view="dash" class="active" data-i18n="仪表盘">仪表盘<span class="cnt urgent" id="cnt-reminders" hidden>0</span></button>
     <button data-view="qoder">Qoder<span class="cnt" id="cnt-qoder">0</span></button>
     <button data-view="workbuddy">WorkBuddy<span class="cnt" id="cnt-workbuddy">0</span></button>
     <button data-view="zcode">ZCode<span class="cnt" id="cnt-zcode">0</span></button>
@@ -605,6 +622,7 @@
       <section class="pcard" data-fold="recent"><div class="pcard-title fold-head"><span data-i18n="最近记录">最近记录</span><span class="fold-side"><span class="hint" id="last-tick"></span><span class="fold-ico"></span></span></div><div class="fold-body"><div id="recent"></div></div></section>
       <section class="pcard" data-fold="attention"><div class="pcard-title fold-head"><span data-i18n="需要处理">需要处理</span><span class="fold-side"><span class="hint" id="att-count"></span><span class="fold-ico"></span></span></div><div class="fold-body"><div id="attention"></div></div></section>
       <section class="pcard" data-fold="tools"><div class="pcard-title fold-head"><span data-i18n="工具覆盖">工具覆盖</span><span class="fold-side"><span class="hint" id="tool-cov-count"></span><span class="fold-ico"></span></span></div><div class="fold-body"><div id="tool-coverage-card"><div class="muted-empty">加载中…</div></div></div></section>
+      <section class="pcard" data-fold="reminder"><div class="pcard-title fold-head"><span data-i18n="积分到期提醒">积分到期提醒</span><span class="fold-side"><span class="hint" id="rem-count"></span><span class="fold-ico"></span></span></div><div class="fold-body"><div id="reminder-card"><div class="muted-empty">加载中…</div></div></div></section>
     </div>
   </section>
 
@@ -1276,6 +1294,7 @@ async function loadSettings() {
     const d = await api('/api/settings');
     state.sec = { enabled: Boolean(d.panelKeyEnabled), loaded: true };
     state.wbActivity = d.workbuddyActivity !== false;   // WB 国际版活跃请求总开关（默认开）
+    state.reminderCfg = d.reminder || {};               // F4 到期提醒配置（总开关 + 提前天数）
     if (!d.panelKeyEnabled) setKey('');   // 关闭后清掉本地缓存的旧密钥
     if (d.locale) renderLocale(d.locale);
   } catch (e) { /* 401（密码开启但未输入）等状态由 promptKey 流程处理 */ }
@@ -1346,6 +1365,35 @@ $('cfg-autostart').addEventListener('change', async (e) => {
     fillAutostart();
     toast(T('已保存'), true);
   } catch (err) { toast(err.message, false); fillAutostart(); }
+});
+// 积分到期提醒（F4）：总开关 + 提前天数（1-14，默认 3）
+function fillReminder() {
+  const cfg = state.reminderCfg || {};
+  $('cfg-reminder').checked = cfg.enabled !== false;
+  $('cfg-reminder-days').value = String(cfg.daysBefore || 3);
+  const list = (state.status && state.status.expiring) || [];
+  $('cfg-reminder-state').textContent = cfg.enabled === false ? T('已关闭')
+    : list.length ? T('当前 ') + list.length + T(' 项待提醒') : T('暂无需提醒');
+}
+$('cfg-reminder').addEventListener('change', async (e) => {
+  try {
+    const d = await api('/api/settings', { method: 'PUT', json: { reminder: { enabled: e.target.checked } } });
+    state.reminderCfg = d.reminder || {};
+    await loadStatus();
+    fillReminder();
+    render();
+    toast(T('已保存'), true);
+  } catch (err) { toast(err.message, false); fillReminder(); }
+});
+$('cfg-reminder-days').addEventListener('change', async (e) => {
+  try {
+    const d = await api('/api/settings', { method: 'PUT', json: { reminder: { daysBefore: Number(e.target.value) } } });
+    state.reminderCfg = d.reminder || {};
+    await loadStatus();
+    fillReminder();
+    render();
+    toast(T('已保存'), true);
+  } catch (err) { toast(err.message, false); fillReminder(); }
 });
 function logsDisplayDefault() {
   try { return localStorage.getItem('qd_logs_expanded') !== '0' ? 'expanded' : 'collapsed'; } catch { return 'expanded'; }
@@ -2056,6 +2104,7 @@ function renderDash() {
 
   renderOnboarding();   // 零账号引导卡（有账号即隐藏，不占仪表盘）
   renderToolCoverage();   // 工具覆盖小卡（注册表工具：已注册 / 已导入 / 未发现）
+  renderReminders();   // 积分到期提醒卡（F4）
 }
 
 function renderStatus() {
@@ -3168,6 +3217,46 @@ function renderToolCoverage() {
   box.innerHTML = rows;
   $('tool-cov-count').textContent = T('注册 ') + tools.length + T(' · 已导入 ') + importedTools + T(' · 未发现 ') + (tools.length - importedTools);
 }
+// 积分到期提醒卡（F4）：数据源 /api/status.expiring（脱敏标量）；nav 红点 = 待提醒数（有 urgent 时常亮红）
+function renderReminders() {
+  const box = $('reminder-card');
+  if (!box) return;
+  const list = (state.status && state.status.expiring) || [];
+  const cnt = $('cnt-reminders');
+  if (cnt) {
+    cnt.hidden = !list.length;
+    cnt.textContent = String(list.length);
+    cnt.classList.toggle('urgent', list.some((r) => r.level === 'urgent'));
+  }
+  $('rem-count').textContent = list.length ? list.length + T(' 项') : '';
+  if (!list.length) {
+    box.innerHTML = '<div class="muted-empty">' + T('暂无即将过期的积分（仅对提供到期数据的工具提醒，不猜测）') + '</div>';
+    return;
+  }
+  const cfg = state.reminderCfg || {};
+  const days = cfg.daysBefore || 3;
+  box.innerHTML = list.map((r) => {
+    const lvl = r.level === 'urgent' ? 'fail' : 'limited';
+    const txt = r.daysLeft <= 0 ? T('已过期') : T('剩 ') + r.daysLeft + T(' 天');
+    return '<div class="item"><span class="item-main"><span class="item-name">' + esc(r.name || r.accountId) + '</span>'
+      + (r.provider ? provBadges(r.provider) : '')
+      + '</span><span class="item-side"><span class="pill ' + lvl + '" title="' + esc(fmtTime(r.expiresAt)) + '">' + txt + '</span>'
+      + '<button class="btn" data-rem-dismiss="' + esc(r.accountId) + '" data-rem-exp="' + esc(r.expiresAt) + '">' + T('知道了') + '</button></span></div>';
+  }).join('')
+    + '<div class="hint" style="margin-top:6px">' + T('提前 ') + days + T(' 天开始提醒；「知道了」后该到期时间不再提醒（提前天数与总开关在「设置 → 通用」）。') + '</div>';
+}
+// 「知道了」逐条免打扰（POST /api/reminders/dismiss，按 账号+到期时间）
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-rem-dismiss]');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const d = await api('/api/reminders/dismiss', { method: 'POST', json: { accountId: btn.dataset.remDismiss, expiresAt: btn.dataset.remExp } });
+    if (state.status) state.status.expiring = d.reminders || [];
+    render();
+    toast(T('已知道了这条提醒'), true);
+  } catch (err) { toast(err.message, false); btn.disabled = false; }
+});
 // 轻量刷新账号列表（只重拉 /api/accounts + 重绘，不重查每账号额度）：
 // 「缺网页会话」徽章的数据源 qoderWebCapturedAt 在账号 meta 里，网页会话是在登录窗
 // 关闭时才收割绑定的（晚于登录成功提示数秒），登录成功后与周期轮询里都要按这个口径补拉。
@@ -4487,6 +4576,7 @@ $('btn-comp').addEventListener('click', async () => {
   renderCompMenu();
   fillAutoCheckin();
   fillAutostart();
+  fillReminder();
   $('cfg-logs-display').value = logsDisplayDefault();
   $('cfg-wb-activity').checked = wbActOn();
   // 网络出口（全局）：预填当前顺序与脱敏代理地址

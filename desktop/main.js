@@ -128,6 +128,55 @@ async function boot() {
   refreshTrayMenu();
   setupAutoUpdate();
   if (!START_HIDDEN) createWindow();
+  startExpiryWatch();
+}
+
+// ── 积分到期提醒（F4）：轮询 /api/status.expiring，变化时汇总通知一次（不逐账号轰炸） ──
+// 数据源是 daemon 的到期监视（expiryWatch，签到轮记录 parts[].expiresAt）；本壳只做「通道」。
+let expiringCache = [];
+let expiringSig = '';
+const EXPIRY_POLL_MS = 5 * 60 * 1000;
+
+async function pollExpiryOnce() {
+  try {
+    const panelKey = daemonMod && typeof daemonMod.getPanelKey === 'function' ? daemonMod.getPanelKey() : '';
+    const res = await fetch('http://127.0.0.1:' + boundPort + '/api/status', {
+      headers: panelKey ? { 'x-qd-key': panelKey } : {},
+    });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
+    const list = Array.isArray(data.expiring) ? data.expiring : [];
+    expiringCache = list;
+    const sig = list.map((r) => `${r.accountId}|${r.expiresAt}|${r.level}`).join(',');
+    if (sig && sig !== expiringSig) {
+      // 汇总制：一条通知列全部（紧急项前置）；dismiss / 到期时间变化会改签名 → 再报一次
+      const urgent = list.filter((r) => r.level === 'urgent');
+      const head = urgent.length
+        ? Tt('{n} 项积分即将/已过期', { n: list.length })
+        : Tt('{n} 项积分 3 天内到期', { n: list.length });
+      const body = list.slice(0, 5).map((r) => {
+        const when = r.daysLeft <= 0 ? Tt('已过期') : Tt('剩 {d} 天', { d: r.daysLeft });
+        return `${r.name || r.accountId}（${r.provider || '—'}）${r.expiresAt.slice(0, 10)} ${when}`;
+      }).join('\n') + (list.length > 5 ? Tt('\n…等 {n} 项', { n: list.length }) : '');
+      notify(head, body);
+    }
+    expiringSig = sig;
+    refreshTrayMenu();
+  } catch { /* 守护未就绪 / 网络抖动：下一轮再试 */ }
+}
+
+function startExpiryWatch() {
+  setTimeout(() => { pollExpiryOnce(); }, 20000).unref?.();   // 启动 20s 后首检（签到轮可能还没写到期记录）
+  setInterval(pollExpiryOnce, EXPIRY_POLL_MS).unref?.();
+}
+
+/** 托盘 tooltip 的到期提醒摘要（refreshTrayMenu 调用） */
+function expiryTrayTip() {
+  if (!expiringCache.length) return '';
+  const urgent = expiringCache.filter((r) => r.level === 'urgent').length;
+  return urgent
+    ? Tt('\n积分到期提醒：{n} 项（{u} 项紧急）', { n: expiringCache.length, u: urgent })
+    : Tt('\n积分到期提醒：{n} 项', { n: expiringCache.length });
 }
 
 /**
@@ -1585,7 +1634,7 @@ function createTray() {
 
 function refreshTrayMenu() {
   if (!tray) return;
-  tray.setToolTip(Tt('CreditDaddy v{v} - 后台自动领取运行中', { v: daemonInfo.version }) + (lastSummary ? '\n' + lastSummary : ''));
+  tray.setToolTip(Tt('CreditDaddy v{v} - 后台自动领取运行中', { v: daemonInfo.version }) + (lastSummary ? '\n' + lastSummary : '') + expiryTrayTip());
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'CreditDaddy v' + daemonInfo.version, enabled: false },
     { label: Tt('面板 {addr}', { addr: '127.0.0.1:' + boundPort }), enabled: false },

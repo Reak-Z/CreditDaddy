@@ -25,6 +25,8 @@
  *   POST   /api/local/import           导入扫描候选 {candidateId, provider?, name?}
  *   GET    /api/tools                  工具注册表列表（tools.d，含安装状态，脱敏）
  *   POST   /api/tools/reload           热重载 tools.d 配置
+ *   GET    /api/reminders              积分到期提醒列表（脱敏标量）
+ *   POST   /api/reminders/dismiss      免打扰某条 {accountId, expiresAt}
  *   GET    /api/tenrouter              10Router 集成配置（key 脱敏）；PUT 保存 {endpoint, key?, syncEnabled?, sources?}；DELETE 清除
  *   POST   /api/tenrouter/test         测试地址与 key {endpoint?, key?}
  *   GET    /api/tenrouter/quotas       10Router 其他供应商额度总览（?force=1 跳过缓存）
@@ -36,7 +38,7 @@
  *   GET    /api/logs                   最近日志
  *   GET    /api/status                 守护进程状态（含 scheduler / autostart / expiring 等）
  *   GET    /api/settings               面板设置（访问密码开关状态，不回显密码）
- *   PUT    /api/settings               设置/修改/关闭面板访问密码 {panelKey? | disable?}；自动签到 {autoCheckin?, checkinIntervalMin?}；开机自启 {autostart?}
+ *   PUT    /api/settings               设置/修改/关闭面板访问密码 {panelKey? | disable?}；自动签到 {autoCheckin?, checkinIntervalMin?}；开机自启 {autostart?}；到期提醒 {reminder?: {enabled?, daysBefore?}}
  *   POST   /api/export                 导出账号 {password, provider?}（口令必填，10router 兼容加密文件）
  *   POST   /api/import                 导入账号 {data, password?}（CreditDaddy / 10router 导出文件）
  *   GET    /                           Web 面板
@@ -71,6 +73,7 @@ import { exportAccounts, buildExportPayload, parseImport, TransferError } from '
 import { syncAccountsTo10r } from './tenrouterAccounts.js';
 import { runCheckinTick, getSchedulerInfo, dayKey, enableZcodeAutoClaimWindow, refreshZcodeScheduler, pollZcodeNow, resyncAutoCheckinScheduler } from './checkin.js';
 import { autostartStatus, setAutostart } from './autostart.js';
+import { dueReminders, dismissReminder } from './expiryWatch.js';
 import { detectQoderApps, readQoderAppAccounts, riskIdentityAvailable, riskIdentitySource, switchTo as qoderSwitchTo, qoderRunning, terminateQoder } from './qoderApp.js';
 import { umidInfo, installUmid } from './qoderUmid.js';
 import * as tenrouter from './tenrouter.js';
@@ -1690,6 +1693,8 @@ async function handleApi(req, res, url) {
       },
       scheduler: await getSchedulerInfo(),
       autostart: autostartStatus(),   // 开机自启实际状态（schtasks 任务在不在；supported=false = 桌面壳场景）
+      // F4 到期提醒（脱敏标量）：面板 nav 红点 + 提醒卡 + 桌面壳通知的数据源
+      expiring: await dueReminders(),
       riskIdentity: riskIdentityAvailable(),
       riskSource: riskIdentitySource(),
       umid: umidInfo(),
@@ -1714,7 +1719,7 @@ async function handleApi(req, res, url) {
 
   // Panel 设置：GET 读取（只回状态不回显密码），PUT 设置 / 修改 / 关闭访问密码
   if (p === '/api/settings' && method === 'GET') {
-    return json(res, 200, { panelKeyEnabled: panelKeyRequired(), locale: getLocale(), workbuddyActivity: (await loadSettings()).workbuddyActivity !== false, autostart: autostartStatus() });
+    return json(res, 200, { panelKeyEnabled: panelKeyRequired(), locale: getLocale(), workbuddyActivity: (await loadSettings()).workbuddyActivity !== false, autostart: autostartStatus(), reminder: (await loadSettings()).reminder || {} });
   }
   if (p === '/api/settings' && method === 'PUT') {
     const body = await readBody(req).catch(() => ({}));
@@ -1744,6 +1749,18 @@ async function handleApi(req, res, url) {
       if (!r.ok) return json(res, 502, { error: r.error || '设置开机自启失败（可改用桌面壳托盘菜单）' });
       await saveSettings({ autostart: body.autostart });
       return json(res, 200, { ok: true, autostart: autostartStatus() });
+    }
+    // 到期提醒配置（F4）：总开关 + 提前天数（1-14，默认 3）
+    if (body?.reminder !== undefined) {
+      const r = body.reminder;
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return json(res, 400, { error: 'reminder 必须是对象' });
+      const patch = {};
+      if (typeof r.enabled === 'boolean') patch.enabled = r.enabled;
+      if (r.daysBefore !== undefined) patch.daysBefore = Math.min(14, Math.max(1, Number(r.daysBefore) || 3));
+      if (!Object.keys(patch).length) return json(res, 400, { error: 'reminder 未携带任何设置字段' });
+      const cur = (await loadSettings()).reminder || {};
+      await saveSettings({ reminder: { ...cur, ...patch } });
+      return json(res, 200, { ok: true, reminder: { ...cur, ...patch } });
     }
     // 只有携带密码字段才走密码分支：纯语言/其它设置的请求此前会掉进
     // 「请提供新密码」400，面板 api() 抛错导致语言切换点了不刷新（i18n 切换失效根因）
@@ -1843,6 +1860,19 @@ async function handleApi(req, res, url) {
     const n = await reloadToolDefs();
     logger.info('DAEMON', '工具注册表已重载:{n} 个', { n });
     return json(res, 200, { ok: true, count: n });
+  }
+
+  // ── 积分到期提醒（F4）：列表 + 免打扰 ──
+  if (p === '/api/reminders' && method === 'GET') {
+    return json(res, 200, { reminders: await dueReminders() });
+  }
+  if (p === '/api/reminders/dismiss' && method === 'POST') {
+    const body = await readBody(req).catch(() => ({}));
+    const accountId = String(body?.accountId || '');
+    const expiresAt = String(body?.expiresAt || '');
+    if (!accountId || !expiresAt) return json(res, 400, { error: '需要 accountId 与 expiresAt' });
+    await dismissReminder(accountId, expiresAt);
+    return json(res, 200, { ok: true, reminders: await dueReminders() });
   }
 
   return json(res, 404, { error: '未知接口' });

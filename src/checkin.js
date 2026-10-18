@@ -8,6 +8,7 @@ import { productImpl } from './providers.js';
 import { productOf, PROVIDER_LABEL } from './constants.js';
 import { registryDayRefreshHour } from './toolRegistry.js';
 import { aggregateQuotas } from './quotaAggregator.js';
+import { recordExpiry, runDailyDigest } from './expiryWatch.js';
 import { startUsageSyncScheduler } from './tenrouter.js';
 import { refreshContext } from './accounts.js';
 import { zcodeAutoClaim } from './zcodeAutoClaim.js';
@@ -340,7 +341,18 @@ async function runTickInner(opts) {
       const agg = await aggregateQuotas(quotaCapable, { live: true });
       const errN = [...agg.values()].filter((v) => v.error).length;
       if (errN) logger.debug('QUOTA', '轮末快照刷新 {n}/{total} 个账号失败', { n: errN, total: quotaCapable.length });
+      // F4 到期记录：快照（或 live 结果）里的 parts[].expiresAt 归一后进 state.expiryWatch；
+      // 无到期数据的工具不记录（不提醒、不猜测）。单账号 try/catch，失败不卡死整体。
+      for (const account of quotaCapable) {
+        const quota = agg.get(account.id)?.quota;
+        if (!quota) continue;
+        try { await recordExpiry(account.id, quota, { name: account.name, provider: account.provider }); }
+        catch (e) { logger.debug('EXPIRY', '{name} 到期记录失败:{err}', { name: account.name || account.id, err: e?.message || e }); }
+      }
     }
+    // F4 每日汇总（09:00 本地时区，当日一次）：复用签到轮判定，不新增第二套定时器
+    const due = await runDailyDigest();
+    if (due.length) logger.info('EXPIRY', '今日积分到期汇总 {n} 项（面板提醒卡与桌面通知可见）', { n: due.length });
   } catch (e) { logger.debug('QUOTA', '轮末快照刷新失败:{err}', { err: e?.message || e }); }
 
   const claimed = results.filter((r) => r.status === 'checked-in');
