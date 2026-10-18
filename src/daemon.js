@@ -20,9 +20,11 @@
  *   POST   /api/checkin                全部签到 {provider?, skipIfCheckedToday?}
  *   POST   /api/auth/device/start      发起浏览器登录 {provider: qoder / qoder-cn / workbuddy / workbuddy-intl / zcode-bigmodel / zcode-zai / minimax}
  *   POST   /api/auth/device/poll       轮询浏览器登录结果 {sessionId}
- *   GET    /api/local/detect           检测本机 Qoder 客户端 / IDE / CLI
- *   POST   /api/local/scan             读取本机已登录账号（解密客户端凭据 + 扫描旧版 IDE）
+ *   GET    /api/local/detect           检测本机 Qoder 客户端 / IDE / CLI（含工具注册表安装状态）
+ *   POST   /api/local/scan             读取本机已登录账号（解密客户端凭据 + 扫描旧版 IDE + 注册表工具）
  *   POST   /api/local/import           导入扫描候选 {candidateId, provider?, name?}
+ *   GET    /api/tools                  工具注册表列表（tools.d，含安装状态，脱敏）
+ *   POST   /api/tools/reload           热重载 tools.d 配置
  *   GET    /api/tenrouter              10Router 集成配置（key 脱敏）；PUT 保存 {endpoint, key?, syncEnabled?, sources?}；DELETE 清除
  *   POST   /api/tenrouter/test         测试地址与 key {endpoint?, key?}
  *   GET    /api/tenrouter/quotas       10Router 其他供应商额度总览（?force=1 跳过缓存）
@@ -73,7 +75,9 @@ import { umidInfo, installUmid } from './qoderUmid.js';
 import * as tenrouter from './tenrouter.js';
 import * as zcodeGateway from './zcodeGateway.js';
 import { startDeviceFlow, pollDeviceFlow, LOGIN_KINDS } from './authDevice.js';
-import { detectInstalls, scanLocalTokens, putCandidate, peekCandidate } from './localDetect.js';
+import { detectInstalls, scanLocalTokens, detectToolInstalls, putCandidate, peekCandidate } from './localDetect.js';
+import { loadToolDefs, reloadToolDefs, activeToolDefs, toolDefs, registryLoadErrors, userToolsDirPath } from './toolRegistry.js';
+import { readCredentials } from './toolReaders/index.js';
 import { PROVIDER_LABEL, APP_VERSION, PROVIDERS, PROJECT_URL } from './constants.js';
 import { getLocale, setLocale, normalizeLocale, loadDict, t as tr } from './i18n.js';
 
@@ -1400,7 +1404,7 @@ async function handleApi(req, res, url) {
 
   // ── 本机检测 / 凭据扫描 ──
   if (p === '/api/local/detect' && method === 'GET') {
-    return json(res, 200, { apps: detectQoderApps(), workbuddyDir: workbuddyAuthDir(), zcode: detectZcode(), mirasim: detectMirasim(), catpaw: detectCatpaw(), trae: detectTrae(), minimax: detectMiniMax(), legacy: detectInstalls() });
+    return json(res, 200, { apps: detectQoderApps(), workbuddyDir: workbuddyAuthDir(), zcode: detectZcode(), mirasim: detectMirasim(), catpaw: detectCatpaw(), trae: detectTrae(), minimax: detectMiniMax(), legacy: detectInstalls(), tools: detectToolInstalls(activeToolDefs()) });
   }
   if (p === '/api/local/scan' && method === 'POST') {
     const existing = await loadAccounts();
@@ -1473,7 +1477,28 @@ async function handleApi(req, res, url) {
     for (const c of legacy.candidates) {
       candidates.push({ ...c, provider: null, source: '旧版 Qoder IDE / CLI 文件', imported: known(null, peekCandidate(c.id)?.token) });
     }
-    return json(res, 200, { candidates, errors, scanned: legacy.scanned, scannedDirs: [...dirs, wb.dir] });
+    // 9) 工具注册表（tools.d 配置驱动）：AutoClaw 等新工具的本机凭据发现（L1 reader）。
+    //    总预算 15s：超时后剩余工具记「扫描超时」错误项，不阻塞其他工具（安全设计 #6）。
+    const regDefs = activeToolDefs().filter((d) => d.capabilities.discover);
+    const SCAN_BUDGET_MS = 15000;
+    const scanStart = Date.now();
+    for (const def of regDefs) {
+      if (Date.now() - scanStart > SCAN_BUDGET_MS) {
+        errors.push({ file: def.name, error: '扫描超时（多工具总预算 15s 已用尽）' });
+        continue;
+      }
+      let r;
+      try { r = await readCredentials(def); }
+      catch (e) { errors.push({ file: def.file, error: e?.message || String(e) }); continue; }
+      errors.push(...r.errors);
+      for (const rec of r.records) {
+        addRecord(
+          { ...rec, provider: rec.provider || def.provider, meta: { ...(rec.meta || {}), toolId: def.id } },
+          { source: rec.source === 'local-scan' ? `${def.name} 文件扫描` : `${def.name} 本地服务`, toolId: def.id, toolName: def.name },
+        );
+      }
+    }
+    return json(res, 200, { candidates, errors, scanned: legacy.scanned, scannedDirs: [...dirs, wb.dir], tools: detectToolInstalls(activeToolDefs()) });
   }
   if (p === '/api/local/import' && method === 'POST') {
     const body = await readBody(req);
@@ -1780,6 +1805,27 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── 工具注册表（tools.d 配置驱动）──
+  if (p === '/api/tools' && method === 'GET') {
+    const installs = detectToolInstalls(activeToolDefs());
+    return json(res, 200, {
+      tools: toolDefs().map((d) => ({
+        id: d.id, provider: d.provider, name: d.name, vendor: d.vendor,
+        enabled: d.enabled, platforms: d.platforms, capabilities: d.capabilities,
+        checkin: Boolean(d.checkin), quota: Boolean(d.quota),
+        active: d.enabled && (!d.platforms.length || d.platforms.includes(process.platform)),
+        installed: installs.find((x) => x.id === d.id)?.installed ?? null,   // 平台不符/禁用 = 未探测
+      })),
+      errors: registryLoadErrors(),   // 加载时被跳过的坏配置（面板提示用户自查）
+      userDir: userToolsDirPath(),
+    });
+  }
+  if (p === '/api/tools/reload' && method === 'POST') {
+    const n = await reloadToolDefs();
+    logger.info('DAEMON', '工具注册表已重载:{n} 个', { n });
+    return json(res, 200, { ok: true, count: n });
+  }
+
   return json(res, 404, { error: '未知接口' });
 }
 
@@ -1801,6 +1847,9 @@ export function getLoginProxyUrl() { return proxyUrl() || null; }
 
 export async function startDaemon(port = DEFAULT_PORT, host = '127.0.0.1') {
   await initPanelKey();
+  // 工具注册表（tools.d）先加载：productOf / allProviders 的动态项、扫描遍历、调度回落都读它。
+  // 加载失败不阻断启动（退化为「无注册表工具」，坏配置的明细进 registryLoadErrors）。
+  try { await loadToolDefs(); } catch (e) { logger.warn('DAEMON', '工具注册表加载失败:{err}', { err: e?.message || e }); }
   // 跨进程单实例守护（P0-3 层）：daemon.json 记录 pid+port，端口探活信带——两个实例
   // 共用同一 dataDir 时 accounts/settings/state.json 的后写会覆盖前写（进程内串行队列
   // 不跨进程）。发现活实例直接拒启，不要悄悄抬到下一个端口共存。

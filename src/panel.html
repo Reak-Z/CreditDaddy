@@ -299,6 +299,10 @@
   .box { border: 1px solid var(--border-subtle); border-radius: 10px; padding: 10px 12px; margin-top: 10px; background: var(--surface-2); }
   .cand { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface); }
   .cand + .cand { margin-top: 8px; }
+  /* 注册表工具分组头（本机导入 tab 按工具分组展示，新增样式不动既有节点） */
+  .cand-group { margin: 12px 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
+  .cand-group:first-child { margin-top: 0; }
+  .cand-group .tag { font-size: 10px; font-weight: 400; color: var(--text-3); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 1px 5px; }
   .cand .row { flex: none; flex-wrap: nowrap; gap: 6px; }
   .cand-main { min-width: 0; }
   .cand-name { font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -3830,13 +3834,23 @@ function openAdd(product) {
 async function localScan() {
   const box = $('scan-result');
   $('scan-status').textContent = T('扫描中（最多约 10 秒）…');
-  box.innerHTML = T('<div class="hint">正在读取本机客户端凭据（Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Trae / MiniMax）…</div>');
+  box.innerHTML = T('<div class="hint">正在读取本机客户端凭据（Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Trae / MiniMax）及工具注册表发现的工具…</div>');
   try {
     const r = await api('/api/local/scan', { method: 'POST' });
     $('scan-status').textContent = '';
     let html = '';
     const cands = r.candidates.filter((c) => !state.addProduct || (c.provider ? provOf(c.provider).prod : 'qoder') === state.addProduct);
+    // 注册表工具（tools.d）候选按工具分组展示：组头带工具名与安装/运行状态
+    const regTools = r.tools || [];
+    let lastTool = null;
     for (const c of cands) {
+      if (c.toolId && c.toolId !== lastTool) {
+        const t = regTools.find((x) => x.id === c.toolId);
+        html += '<div class="cand-group">' + esc(c.toolName || (t && t.name) || c.toolId)
+          + (t && t.installed === false ? T('<span class="tag">未检测到安装</span>') : '')
+          + (t && t.running ? T('<span class="tag">运行中</span>') : '') + '</div>';
+        lastTool = c.toolId;
+      }
       const title = c.kind === 'app' ? esc(c.name || c.email || c.phone || T('(未命名)')) : '<span style="font-family:monospace">' + esc(c.tokenMasked) + '</span>';
       const prov = (c.provider ? provBadges(c.provider) : '<span class="badge">' + esc(c.kind) + '</span>') + (c.current ? T('<span class="pill cur">当前登录</span>') : '');
       const sub = c.kind === 'app'
@@ -3854,7 +3868,8 @@ async function localScan() {
       const where = state.addProduct ? prodLabel(state.addProduct) : T('Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Trae / MiniMax');
       const alt = state.addProduct === 'zcode' || state.addProduct === 'mirasim' || state.addProduct === 'catpaw' || state.addProduct === 'trae' ? '' : T('，或改用「浏览器登录」「粘贴 Token」');
       html += T('<div class="hint">未发现已登录的 ') + where + T(' 账号。请先在客户端登录') + alt + T('。<br>已检查：Qoder / Qoder CN 客户端数据目录、WorkBuddy 凭据目录、ZCode 数据目录、mirasim 数据目录、妙手凭据目录、Trae 数据目录、MiniMax 数据目录')
-        + (r.scannedDirs && r.scannedDirs.length ? T('、') + r.scannedDirs.map(esc).join(T('、')) : '') + '</div>';
+        + (r.scannedDirs && r.scannedDirs.length ? T('、') + r.scannedDirs.map(esc).join(T('、')) : '')
+        + (regTools.length ? T('；注册表工具：') + regTools.map((t) => esc(t.name) + (t.installed ? T('（已安装）') : T('（未安装）'))).join(T('、')) : '') + '</div>';
     }
     box.innerHTML = html;
     box.querySelectorAll('button[data-cid]').forEach((b) => b.addEventListener('click', async () => {

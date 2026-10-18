@@ -32,7 +32,8 @@ const HELP = `CreditDaddy — Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Tra
   creditdaddy export [file.json] --password 口令 [--cn|--intl]
                                                         导出账号（口令必填，至少 4 位；与 10router 迁移文件互通）
   creditdaddy import <file.json> [--password 口令]        导入 CreditDaddy / 10router 导出文件
-  creditdaddy scan                                       导入本机 Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Trae 客户端已登录的账号
+  creditdaddy scan                                       导入本机 Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Trae 客户端已登录的账号（含工具注册表发现的工具）
+  creditdaddy tools                                      列出工具注册表（tools.d）已注册工具与安装状态
   creditdaddy umid [install|remove]                      Qoder 设备身份组件（Linux / fnOS 国际版领取用）
   creditdaddy start [--port 47860] [--host 127.0.0.1]    后台启动（关掉终端也继续跑）
   creditdaddy stop                                       停止后台实例
@@ -290,6 +291,10 @@ async function main() {
       const { liveToAccount: catpawLive } = await import('../src/catpawLocal.js');
       const { liveToAccount: traeLive } = await import('../src/traeLocal.js');
       const { addAccount } = await import('../src/accounts.js');
+      // 工具注册表（tools.d 配置驱动）：AutoClaw 等新工具的本机凭据发现（L1 reader）
+      const { loadToolDefs, activeToolDefs } = await import('../src/toolRegistry.js');
+      const { readAllCredentials } = await import('../src/toolReaders/index.js');
+      await loadToolDefs();
       const qa = await readQoderAppAccounts();
       const wb = readWorkbuddySessions();
       const skipped = [];
@@ -314,12 +319,43 @@ async function main() {
         ...(cpAccount ? [{ label: '妙手当前登录', rec: cpAccount }] : []),
         ...(traeAccount ? [{ label: 'Trae 当前登录', rec: traeAccount }] : []),
       ];
+      // 注册表工具：reader 产出记录（provider 为空时用工具声明的 provider）
+      const regDefs = activeToolDefs().filter((d) => d.capabilities.discover);
+      if (regDefs.length) {
+        const reg = await readAllCredentials(regDefs);
+        for (const e of reg.errors) skipped.push({ file: e.file, error: e.error });
+        const provOfTool = new Map(regDefs.map((d) => [d.id, d.provider]));
+        for (const rec of reg.records) {
+          records.push({
+            label: `${rec.toolName || rec.toolId}（${rec.source}）`,
+            rec: { ...rec, provider: rec.provider || provOfTool.get(rec.toolId) || null },
+          });
+        }
+      }
       for (const e of [...qa.errors, ...wb.errors, ...skipped]) console.log('⚠', e.file, e.error);
-      if (!records.length) { console.log('（本机 Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Trae 客户端未登录或未安装）'); break; }
+      if (!records.length) { console.log('（本机各客户端未登录或未安装；可用 creditdaddy tools 查看已注册工具）'); break; }
       for (const { label, rec } of records) {
         const r = await addAccount(rec, { trusted: true });
         console.log(r.duplicate ? (r.updated ? '↻ 已更新' : '· 已存在') : '✓ 已导入', r.account.name || r.account.id, `（${label}）`);
       }
+      break;
+    }
+    case 'tools': {
+      const { loadToolDefs, toolDefs, activeToolDefs, registryLoadErrors, userToolsDirPath } = await import('../src/toolRegistry.js');
+      const { detectToolInstalls } = await import('../src/localDetect.js');
+      await loadToolDefs();
+      const defs = toolDefs();
+      if (!defs.length) { console.log('（没有已注册的工具；在仓库 tools.d/ 或 ' + userToolsDirPath() + ' 添加 JSON 配置）'); break; }
+      const installs = detectToolInstalls(activeToolDefs());
+      console.log('已注册工具（仓库 tools.d/ 内置 + ' + userToolsDirPath() + ' 用户覆盖）：');
+      for (const d of defs) {
+        const inst = installs.find((x) => x.id === d.id);
+        const caps = ['discover', 'checkin', 'quota'].filter((k) => d.capabilities[k]).join('/') || '无';
+        console.log(`  [${d.id}] ${d.name}（${d.vendor}） provider=${d.provider} 能力=${caps}`
+          + ` 安装=${inst ? (inst.installed ? '是' : '否') : '未探测（禁用或平台不符）'}`
+          + (d.enabled ? '' : ' [已禁用]'));
+      }
+      for (const e of registryLoadErrors()) console.log('  ⚠ 配置被跳过：', e.file, e.error);
       break;
     }
     case 'umid': {

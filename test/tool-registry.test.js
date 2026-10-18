@@ -89,7 +89,7 @@ test('reader 分发：http-token 打本地假服务（JSON 与纯文本两形态
     assert.ok(r3.errors.length && r3.errors[0].error.includes('404'));
     const r4 = await readers.readCredentials(def('http://127.0.0.1:1/get_token'));
     assert.ok(r4.errors.length && !r4.records.length, '端口不通：记错误不抛');
-    const r5 = await readers.readCredentials({ id: 'q', provider: 'q', file: 'f', credential: { reader: 'dpapi-json', files: [{ path: 'x' }], tokenPath: '$.token' } });
-    assert.ok(r5.errors[0].error.includes('尚未实现'), 'T02 之前的 reader 给出明确错误');
+    const r5 = await readers.readCredentials({ id: 'q', provider: 'q', file: 'f', credential: { reader: 'dpapi-json', files: [{ path: path.join(os.tmpdir(), 'cd-no-such-xyz', 'auth.dat') }], tokenPath: '$.token' } });
+    assert.ok(r5.errors.length && r5.errors[0].error.includes('文件不存在'), 'dpapi-json reader（T02 已交付）：缺文件记错误不抛');
   } finally { server.close(); }
 });
