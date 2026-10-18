@@ -1719,7 +1719,8 @@ async function handleApi(req, res, url) {
 
   // Panel 设置：GET 读取（只回状态不回显密码），PUT 设置 / 修改 / 关闭访问密码
   if (p === '/api/settings' && method === 'GET') {
-    return json(res, 200, { panelKeyEnabled: panelKeyRequired(), locale: getLocale(), workbuddyActivity: (await loadSettings()).workbuddyActivity !== false, autostart: autostartStatus(), reminder: (await loadSettings()).reminder || {} });
+    const s = await loadSettings();
+    return json(res, 200, { panelKeyEnabled: panelKeyRequired(), locale: getLocale(), workbuddyActivity: s.workbuddyActivity !== false, autostart: autostartStatus(), reminder: s.reminder || {} });
   }
   if (p === '/api/settings' && method === 'PUT') {
     const body = await readBody(req).catch(() => ({}));
