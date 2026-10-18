@@ -1,0 +1,27 @@
+{
+  "id": "autoclaw",
+  "name": "AutoClaw",
+  "vendor": "智谱 AI",
+  "provider": "autoclaw",
+  "product": "autoclaw",
+  "enabled": true,
+  "platforms": ["win32"],
+  "capabilities": { "discover": true, "checkin": false, "quota": false },
+  "detect": {
+    "installed": [
+      { "type": "file", "path": "%LOCALAPPDATA%\\Programs\\AutoClaw\\AutoClaw.exe" },
+      { "type": "process", "exe": ["AutoClaw.exe"] }
+    ],
+    "running": [{ "type": "process", "exe": ["AutoClaw.exe"] }]
+  },
+  "credential": {
+    "reader": "http-token",
+    "url": "http://127.0.0.1:18432/get_token",
+    "timeoutMs": 3000,
+    "tokenPath": "$.token"
+  },
+  "dayRefreshHourUtc8": 0,
+  "checkin": null,
+  "quota": null,
+  "_comment": "凭据发现（L1）已可用：AutoClaw 桌面端运行并登录时，127.0.0.1:18432/get_token 返回 Bearer token（源自 autoclaw_checkin.py 逆向验证）。identity 路径【待实测】：本地网关响应是否携带用户信息未经确认，暂不配置（导入后账号名为空，用户可在面板备注）。签到（L2）端点未验证：远端 autoglm-api.zhipuai.cn 的每日免费额度领取接口未抓到包，checkin 保持 null、capabilities.checkin=false——抓包确认 URL/method/请求体/响应码后，按 tools.d/README.md 的 L2 模板填参即活，严禁凭猜测编造接口参数。"
+}

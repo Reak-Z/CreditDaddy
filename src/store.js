@@ -14,7 +14,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { PROVIDERS, productOf } from './constants.js';
+import { productOf, allProviders } from './constants.js';
 
 let migrated = false;
 
@@ -40,6 +40,9 @@ export function dataDir() {
 const ACCOUNTS_FILE = () => path.join(dataDir(), 'accounts.json');
 const STATE_FILE = () => path.join(dataDir(), 'state.json');
 const SETTINGS_FILE = () => path.join(dataDir(), 'settings.json');
+
+/** 工具注册表用户覆盖目录：~/.creditdaddy/tools.d（与仓库 tools.d 同名 id 时用户优先，见 toolRegistry.js） */
+export function toolsDir() { return path.join(dataDir(), 'tools.d'); }
 
 async function ensureDir() {
   await fs.mkdir(dataDir(), { recursive: true, mode: 0o700 });
@@ -158,8 +161,9 @@ export function normalizeExpiry(v) {
  * 可选元数据：uid / email / refreshToken / expiresAt / source / meta（产品相关的非通用字段，如 WorkBuddy 会话信息）
  */
 export function normalizeAccountInput({ name, provider, token, uid, email, refreshToken, expiresAt, source, meta }) {
-  if (!PROVIDERS.includes(provider)) {
-    throw new Error(`provider 必须是 ${PROVIDERS.join(' 或 ')}`);
+  // 合法 provider = 内置 14 个 + 注册表动态项（allProviders；注册表未加载时退化为内置清单）
+  if (!allProviders().includes(provider)) {
+    throw new Error(`provider 必须是 ${allProviders().join(' 或 ')}`);
   }
   const trimmed = String(token || '').trim();
   if (!trimmed) throw new Error('token 不能为空');

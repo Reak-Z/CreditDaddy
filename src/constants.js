@@ -9,6 +9,10 @@
  */
 
 import { readFileSync } from 'node:fs';
+// 工具注册表（tools.d 配置驱动）：动态 provider 与 productOf 回落。
+// 依赖方向为 constants → toolRegistry →（store / constants），全部在函数体内使用，
+// 模块加载期无跨模块执行，不存在循环初始化问题。
+import { registryProviders, toolForProvider } from './toolRegistry.js';
 
 export const OPENAPI_BASE = 'https://openapi.qoder.sh';
 export const CN_OPENAPI_BASE = 'https://openapi.qoder.com.cn';
@@ -36,6 +40,13 @@ export const JOB_TOKEN_EXCHANGE_PATH = '/api/v1/jobToken/exchange';
 
 // 账号的 provider = 产品 + 区域。新增产品时在此登记，并在 providers.js 挂上对应实现。
 export const PROVIDERS = ['qoder', 'qoder-cn', 'workbuddy', 'workbuddy-intl', 'zcode', 'mirasim', 'catpaw', 'trae', 'minimax', 'tokenharbor', 'xiaomi-mimo', 'river', 'modelscope', 'longcat'];
+/**
+ * 全部合法 provider：内置 14 个 + 工具注册表动态项（tools.d 配置驱动的新工具）。
+ * store.normalizeAccountInput 的校验改用它——注册表未加载时动态项为空（退化为内置清单）。
+ */
+export function allProviders() {
+  return [...PROVIDERS, ...registryProviders()];
+}
 export const PROVIDER_LABEL = {
   qoder: 'Qoder 国际版',
   'qoder-cn': 'Qoder 国内版',
@@ -52,7 +63,9 @@ export const PROVIDER_LABEL = {
   modelscope: 'ModelScope 魔搭',
   longcat: 'LongCat',
 };
-/** provider → 产品线（qoder / workbuddy / zcode / mirasim / catpaw / trae / minimax / tokenharbor / xiaomi-mimo / river） */
+/** provider → 产品线（qoder / workbuddy / zcode / mirasim / catpaw / trae / minimax / tokenharbor / xiaomi-mimo / river）
+ *  查表 miss 时回落工具注册表（tools.d）：注册表工具一般 provider 即产品线（autoclaw → autoclaw）；
+ *  注册表未加载 / 未登记时保持原有默认（qoder），行为不回归。 */
 export const productOf = (provider) => {
   const p = String(provider);
   if (p.startsWith('workbuddy')) return 'workbuddy';
@@ -66,6 +79,8 @@ export const productOf = (provider) => {
   if (p === 'river') return 'river';
   if (p === 'modelscope') return 'modelscope';
   if (p === 'longcat') return 'longcat';
+  const def = toolForProvider(p);
+  if (def) return def.product || def.provider;
   return 'qoder';
 };
 /** provider 是否国内版 */
