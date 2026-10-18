@@ -6,6 +6,7 @@
 import { loadAccounts, loadSettings, loadState, withAccounts, withState } from './store.js';
 import { productImpl } from './providers.js';
 import { productOf, PROVIDER_LABEL } from './constants.js';
+import { registryDayRefreshHour } from './toolRegistry.js';
 import { startUsageSyncScheduler } from './tenrouter.js';
 import { refreshContext } from './accounts.js';
 import { zcodeAutoClaim } from './zcodeAutoClaim.js';
@@ -31,6 +32,7 @@ const ZCODE_FIRST_DELAY_MS = 2 * 60 * 1000;
 
 // 各产品「业务日」刷新时点（UTC+8）：Qoder 每日 10:00 放出/重置领取资格，其余产品按 00:00。
 // 签到日 = 对应时点起的日历日：dayKey(now, provider) = (now + (8 - 刷新小时)h) 的 UTC 日期
+// 注册表工具（tools.d）的翻日时点读其 dayRefreshHourUtc8（C4：不再硬编码）。
 const DAY_REFRESH_HOUR_UTC8 = { qoder: 10, 'qoder-cn': 10 };
 
 let timerHandle = null;
@@ -66,9 +68,10 @@ export async function getSchedulerInfo() {
   };
 }
 
-/** 签到业务日。Qoder 以 10:00 (UTC+8) 为界，其余产品以 00:00 (UTC+8) 为界；默认 Qoder 口径（/api/status 展示用）。 */
+/** 签到业务日。Qoder 以 10:00 (UTC+8) 为界，其余产品以 00:00 (UTC+8) 为界；默认 Qoder 口径（/api/status 展示用）。
+ *  查找顺序：内置表 → 注册表 dayRefreshHourUtc8 → 0（注册表未加载时退化为内置口径，行为不回归）。 */
 export function dayKey(nowMs = Date.now(), provider = 'qoder') {
-  const h = DAY_REFRESH_HOUR_UTC8[provider] ?? 0;
+  const h = DAY_REFRESH_HOUR_UTC8[provider] ?? registryDayRefreshHour(provider) ?? 0;
   return new Date(nowMs + (8 - h) * 3600 * 1000).toISOString().slice(0, 10);
 }
 

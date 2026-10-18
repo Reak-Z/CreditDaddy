@@ -9,6 +9,8 @@
  */
 
 import { productOf } from './constants.js';
+import { toolForProvider } from './toolRegistry.js';
+import { buildFallbackImpl } from './toolCheckin.js';
 import { checkinOne as checkinQoder, fetchQuotaUsage, fetchUserinfo, fetchUsageDetail } from './qoderClient.js';
 import { checkinWorkbuddy, checkinWorkbuddyIntl, fetchWorkbuddyQuota, inspectToken } from './workbuddyClient.js';
 import { fetchZcodeQuota } from './zcodeClient.js';
@@ -211,6 +213,14 @@ function wrapMiniMaxRefresh(account, ctx = {}) {
   };
 }
 
+/**
+ * provider → 产品实现。查找顺序：
+ *   1. 工具注册表（tools.d 配置驱动的工具，如 autoclaw）——构造等价回落 impl（L2 模板执行）
+ *   2. 内置 PRODUCTS（qoder/qoder-cn 等同产品线归并；未知 provider 保持原有 qoder 默认）
+ * 注册表与内置的 provider 冲突在加载期即拒（validateToolDef），此处不会静默覆盖 PRODUCTS。
+ */
 export function productImpl(provider) {
+  const def = toolForProvider(provider);
+  if (def) return buildFallbackImpl(def);
   return PRODUCTS[productOf(provider)];
 }

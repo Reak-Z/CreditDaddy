@@ -303,6 +303,8 @@
   .cand-group { margin: 12px 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
   .cand-group:first-child { margin-top: 0; }
   .cand-group .tag { font-size: 10px; font-weight: 400; color: var(--text-3); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 1px 5px; }
+  /* 零账号引导卡：候选行可点选（label 包整行） */
+  .cand input.onboard-chk { flex: none; margin-right: 4px; }
   .cand .row { flex: none; flex-wrap: nowrap; gap: 6px; }
   .cand-main { min-width: 0; }
   .cand-name { font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -476,6 +478,11 @@
                 </div>
                 <div class="hint" data-i18n="作用于全部产品的定时签到轮(ZCode 活动领取在自身页签单独配置);修改立即生效,下一轮按新间隔执行。">作用于全部产品的定时签到轮(ZCode 活动领取在自身页签单独配置);修改立即生效,下一轮按新间隔执行。</div>
               </div>
+              <div class="field" id="cfg-autostart-field" style="display:none">
+                <label data-i18n="开机自启">开机自启</label>
+                <label class="check"><input type="checkbox" id="cfg-autostart"> <span data-i18n="开机自动启动（Windows 计划任务，当前用户免管理员）">开机自动启动（Windows 计划任务，当前用户免管理员）</span></label>
+                <div class="hint" data-i18n="无桌面壳时用 Windows 计划任务在登录后自动运行 creditdaddy start（start 幂等，重复触发无副作用）；桌面版也可在托盘菜单设置。">无桌面壳时用 Windows 计划任务在登录后自动运行 creditdaddy start（start 幂等，重复触发无副作用）；桌面版也可在托盘菜单设置。</div>
+              </div>
               <div class="field">
                 <label data-i18n="WorkBuddy 国际版 活跃请求">WorkBuddy 国际版 活跃请求</label>
                 <label class="check"><input type="checkbox" id="cfg-wb-activity"> <span data-i18n="定期发送活跃请求（保持资格，不保证奖励）">定期发送活跃请求（保持资格，不保证奖励）</span></label>
@@ -579,6 +586,11 @@
         </div>
       </div>
       <div class="kpis" id="kpis"></div>
+    </div>
+    <!-- 零账号引导卡（F2 onboarding）：扫描本机已登录工具 → 勾选 → 导入；有账号后隐藏 -->
+    <div class="panel" id="onboard" style="display:none">
+      <div class="toolbar"><div class="summary"><span class="dash-title" data-i18n="开始使用">开始使用</span></div></div>
+      <div id="onboard-body"></div>
     </div>
     <div class="prods" id="prods"></div>
     <div class="dash-cols">
@@ -1302,6 +1314,22 @@ function fillAutoCheckin() {
   $('cfg-auto-checkin').checked = sc.enabled !== false;
   $('cfg-checkin-interval').value = String(sc.intervalMin || 120);
 }
+// 开机自启开关：/api/status.autostart（supported=false 时整段隐藏——桌面壳场景走托盘菜单）
+function fillAutostart() {
+  const a = state.status && state.status.autostart;
+  const field = $('cfg-autostart-field');
+  if (!a || a.supported === false) { field.style.display = 'none'; return; }
+  field.style.display = '';
+  $('cfg-autostart').checked = a.enabled === true;
+}
+$('cfg-autostart').addEventListener('change', async (e) => {
+  try {
+    await api('/api/settings', { method: 'PUT', json: { autostart: e.target.checked } });
+    await loadStatus();
+    fillAutostart();
+    toast(T('已保存'), true);
+  } catch (err) { toast(err.message, false); fillAutostart(); }
+});
 function logsDisplayDefault() {
   try { return localStorage.getItem('qd_logs_expanded') !== '0' ? 'expanded' : 'collapsed'; } catch { return 'expanded'; }
 }
@@ -1981,6 +2009,8 @@ function renderDash() {
         + '<span class="item-side"><span class="pill ' + cls + '">' + esc(label) + '</span><span class="item-time">' + fmtTime(r.at).slice(5) + '</span></span></div>';
     }).join('')
     : '<div class="muted-empty">' + T('还没有领取记录') + '</div>';
+
+  renderOnboarding();   // 零账号引导卡（有账号即隐藏，不占仪表盘）
 }
 
 function renderStatus() {
@@ -3887,6 +3917,60 @@ async function localScan() {
   }
 }
 
+// ── 零账号引导卡（F2 onboarding）：一次登录、每天自动签到的入口 ──
+// 复用 /api/local/scan 与 /api/local/import 既有链路（不新建）：扫描本机已登录工具 → 勾选 → 逐条导入。
+// 引导卡只做「层」，账号入库后由签到调度（120min 串行轮 + skipIfCheckedToday 幂等）自动接管。
+let onboardScan = null;   // 最近一次扫描的候选（勾选态以此为准）
+function renderOnboarding() {
+  const card = $('onboard');
+  if (state.accounts.length) { card.style.display = 'none'; return; }   // 有账号即让位（不占仪表盘）
+  card.style.display = '';
+  const tools = onboardScan && onboardScan.tools || [];
+  const cands = (onboardScan && onboardScan.candidates || []).filter((c) => !c.imported);
+  const found = tools.filter((t) => t.installed);
+  $('onboard-body').innerHTML =
+    T('<div class="hint">在各 AI 软件客户端里正常登录一次，这里扫描本机登录态一键导入；之后每天自动签到，无需再管。</div>')
+    + (onboardScan ? '' : T('<div class="row" style="margin-top:10px"><button class="btn primary" id="btn-onboard-scan">扫描本机已登录的工具</button></div>'))
+    + (onboardScan ? T('<div class="row" style="margin-top:10px"><button class="btn" id="btn-onboard-scan">重新扫描</button>'
+      + (cands.length ? '<button class="btn primary" id="btn-onboard-import">导入选中（' + cands.length + '）</button>' : '') + '</div>') : '')
+    + (onboardScan && !cands.length ? T('<div class="hint" style="margin-top:10px">未发现可导入的新登录态。')
+      + (found.length ? '' : T('本机尚未检测到已安装的 AI 工具客户端；安装并登录后点「重新扫描」。')
+        + (tools.length ? T('已检查：') + tools.map((t) => esc(t.name) + (t.installed ? T('（已安装）') : T('（未安装）'))).join(T('、')) : '')) + '</div>' : '')
+    + (cands.length ? '<div class="box" style="margin-top:10px">' + cands.map((c) => {
+        const name = c.kind === 'app' ? esc(c.name || c.email || c.phone || T('(未命名)')) : '<span style="font-family:monospace">' + esc(c.tokenMasked) + '</span>';
+        const sub = esc(c.toolName || c.source) + (c.email ? ' · ' + esc(mask(c.email)) : '') + (c.expiresAt ? T(' · 有效期至 ') + esc(fmtTime(c.expiresAt)) : '');
+        return '<label class="cand" style="cursor:pointer"><input type="checkbox" class="onboard-chk" data-cid="' + esc(c.id) + '" checked>'
+          + '<span class="cand-main"><span class="cand-name">' + name + (c.provider ? provBadges(c.provider) : '') + '</span><span class="cand-sub">' + sub + '</span></span></label>';
+      }).join('') + '</div>' : '')
+    + (onboardScan ? '<div class="hint" style="margin-top:8px">' + (onboardScan.errors || []).map((e) => T('读取失败：') + esc(e.file) + T('：') + esc(e.error)).join('<br>') + '</div>' : '');
+  const scanBtn = $('btn-onboard-scan');
+  if (scanBtn) scanBtn.addEventListener('click', () => onboardDoScan());
+  const importBtn = $('btn-onboard-import');
+  if (importBtn) importBtn.addEventListener('click', () => onboardDoImport());
+}
+async function onboardDoScan() {
+  $('onboard-body').innerHTML = T('<div class="hint">正在扫描本机已登录的 AI 工具…</div>');
+  try {
+    onboardScan = await api('/api/local/scan', { method: 'POST' });
+    renderOnboarding();
+  } catch (e) {
+    $('onboard-body').innerHTML = T('<div class="hint" style="color:var(--err)">扫描失败：') + esc(e.message) + '</div>';
+  }
+}
+async function onboardDoImport() {
+  const ids = [...document.querySelectorAll('.onboard-chk:checked')].map((x) => x.dataset.cid);
+  if (!ids.length) return toast(T('请先勾选要导入的账号'), false);
+  let ok = 0;
+  for (const cid of ids) {
+    try {
+      await api('/api/local/import', { json: { candidateId: cid } });
+      ok++;
+    } catch (e) { toast(e.message, false); }
+  }
+  if (ok) { toast(T('已导入 ') + ok + T(' 个账号，之后每天自动签到'), true); onboardScan = null; await loadAccounts(); }
+  renderOnboarding();
+}
+
 // 网络授权登录
 let devTimer = null;
 let devGen = 0;   // 每次发起/取消授权递增，丢弃过期会话的在途轮询结果
@@ -4320,6 +4404,7 @@ $('btn-comp').addEventListener('click', async () => {
   await loadSettings();
   renderCompMenu();
   fillAutoCheckin();
+  fillAutostart();
   $('cfg-logs-display').value = logsDisplayDefault();
   $('cfg-wb-activity').checked = wbActOn();
   // 网络出口（全局）：预填当前顺序与脱敏代理地址

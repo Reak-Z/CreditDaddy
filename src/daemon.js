@@ -34,9 +34,9 @@
  *   GET    /api/qoder/umid             Qoder 设备身份组件状态（Linux / fnOS）
  *   POST   /api/qoder/umid/install     下载官方 qodercli 并提取设备身份组件
  *   GET    /api/logs                   最近日志
- *   GET    /api/status                 守护进程状态
+ *   GET    /api/status                 守护进程状态（含 scheduler / autostart / expiring 等）
  *   GET    /api/settings               面板设置（访问密码开关状态，不回显密码）
- *   PUT    /api/settings               设置/修改/关闭面板访问密码 {panelKey? | disable?}
+ *   PUT    /api/settings               设置/修改/关闭面板访问密码 {panelKey? | disable?}；自动签到 {autoCheckin?, checkinIntervalMin?}；开机自启 {autostart?}
  *   POST   /api/export                 导出账号 {password, provider?}（口令必填，10router 兼容加密文件）
  *   POST   /api/import                 导入账号 {data, password?}（CreditDaddy / 10router 导出文件）
  *   GET    /                           Web 面板
@@ -70,6 +70,7 @@ import { fetchClaimPlans, claimPlan, fetchCaptchaConfig, proxyFirst, setProxyFir
 import { exportAccounts, buildExportPayload, parseImport, TransferError } from './transfer.js';
 import { syncAccountsTo10r } from './tenrouterAccounts.js';
 import { runCheckinTick, getSchedulerInfo, dayKey, enableZcodeAutoClaimWindow, refreshZcodeScheduler, pollZcodeNow, resyncAutoCheckinScheduler } from './checkin.js';
+import { autostartStatus, setAutostart } from './autostart.js';
 import { detectQoderApps, readQoderAppAccounts, riskIdentityAvailable, riskIdentitySource, switchTo as qoderSwitchTo, qoderRunning, terminateQoder } from './qoderApp.js';
 import { umidInfo, installUmid } from './qoderUmid.js';
 import * as tenrouter from './tenrouter.js';
@@ -1678,6 +1679,7 @@ async function handleApi(req, res, url) {
         minimax: dayKey(Date.now(), 'minimax'),
       },
       scheduler: await getSchedulerInfo(),
+      autostart: autostartStatus(),   // 开机自启实际状态（schtasks 任务在不在；supported=false = 桌面壳场景）
       riskIdentity: riskIdentityAvailable(),
       riskSource: riskIdentitySource(),
       umid: umidInfo(),
@@ -1702,7 +1704,7 @@ async function handleApi(req, res, url) {
 
   // Panel 设置：GET 读取（只回状态不回显密码），PUT 设置 / 修改 / 关闭访问密码
   if (p === '/api/settings' && method === 'GET') {
-    return json(res, 200, { panelKeyEnabled: panelKeyRequired(), locale: getLocale(), workbuddyActivity: (await loadSettings()).workbuddyActivity !== false });
+    return json(res, 200, { panelKeyEnabled: panelKeyRequired(), locale: getLocale(), workbuddyActivity: (await loadSettings()).workbuddyActivity !== false, autostart: autostartStatus() });
   }
   if (p === '/api/settings' && method === 'PUT') {
     const body = await readBody(req).catch(() => ({}));
@@ -1725,6 +1727,13 @@ async function handleApi(req, res, url) {
     if (typeof body?.workbuddyActivity === 'boolean') {
       await saveSettings({ workbuddyActivity: body.workbuddyActivity });
       return json(res, 200, { ok: true });
+    }
+    // 开机自启（面板「设置 → 通用」）：schtasks 注册/移除 + 偏好落盘（桌面壳另有托盘入口，两套并存）
+    if (typeof body?.autostart === 'boolean') {
+      const r = setAutostart(body.autostart);
+      if (!r.ok) return json(res, 502, { error: r.error || '设置开机自启失败（可改用桌面壳托盘菜单）' });
+      await saveSettings({ autostart: body.autostart });
+      return json(res, 200, { ok: true, autostart: autostartStatus() });
     }
     // 只有携带密码字段才走密码分支：纯语言/其它设置的请求此前会掉进
     // 「请提供新密码」400，面板 api() 抛错导致语言切换点了不刷新（i18n 切换失效根因）
