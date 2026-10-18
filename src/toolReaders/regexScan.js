@@ -7,9 +7,11 @@
  *   kind:   "device"                命中分类标签（device / PAT / …，回给面板展示）
  *   maxFiles?/maxBytes?/maxMs?      扫描预算（缺省沿用 localDetect 口径）
  *
- * 与 localDetect.scanLocalTokens 的关系：本 reader 是其「正则参数化」后的注册表形态，
- * 预算与跳过目录策略保持一致；命中只产出记录（provider 为空），候选入内存表与
- * 「provider 归属由用户导入时选」由 daemon 层完成（与旧版 Qoder IDE 扫描同链路）。
+ * 与 localDetect.scanLocalTokens 的关系：**独立实现**（不复用其函数）——那边只服务 Qoder
+ * legacy 链路且硬编码 dt-/pt- 正则；本 reader 的策略（预算数值、SKIP_DIRS 名单）与其逐项
+ * 对齐，改一边时同步核对另一边（QA 实测一致）。
+ * 命中只产出记录（provider 为空），候选入内存表与「provider 归属由用户导入时选」由 daemon
+ * 层完成（与旧版 Qoder IDE 扫描同链路）。
  */
 
 import fs from 'node:fs';

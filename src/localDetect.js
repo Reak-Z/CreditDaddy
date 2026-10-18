@@ -6,7 +6,10 @@
  * 面板按 candidateId 导入，token 不在日志中输出。
  *
  * 注册表泛化（F1）：detectToolInstalls(defs) 按 tools.d 的 probe 描述探测
- * 任意工具的安装/运行状态；scanLocalTokens 的正则参数化后供 regex-scan reader 复用。
+ * 任意工具的安装/运行状态。目录树 token 扫描（scanLocalTokens）只服务本模块的
+ * Qoder legacy 链路；注册表的 regex-scan reader 是独立实现（src/toolReaders/
+ * regexScan.js，自定义 pattern），预算（MAX_FILES/MAX_BYTES/MAX_MS）与 SKIP_DIRS
+ * 策略与这里逐项对齐，两边互不复用——改一边时同步核对另一边。
  */
 
 import fs from 'node:fs';
@@ -23,13 +26,12 @@ const CAND_TTL_MS = 10 * 60 * 1000;
 
 const TOKEN_RE = /\b(?:dt|pt)-[A-Za-z0-9_-]{16,}\b/g;
 
-/** 纯函数：提取文本中的 token（去重）——供测试；pattern 缺省为 Qoder dt-/pt- 形态 */
-export function extractTokens(text, pattern) {
-  const re = pattern ? new RegExp(pattern, 'g') : TOKEN_RE;
+/** 纯函数：提取文本中的 Qoder token（dt-/pt-，去重）——供测试 */
+export function extractTokens(text) {
   const found = new Set();
   let m;
-  re.lastIndex = 0;
-  while ((m = re.exec(String(text))) !== null) found.add(m[0]);
+  TOKEN_RE.lastIndex = 0;
+  while ((m = TOKEN_RE.exec(String(text))) !== null) found.add(m[0]);
   return [...found];
 }
 
@@ -122,10 +124,8 @@ const MAX_FILE_BYTES = 1.5 * 1024 * 1024;
 const MAX_FILES = 4000;
 const MAX_MS = 6000;
 
-/** 扫描目录集合，产出候选 token（含少量上下文以辅助辨认）。
- *  opts.pattern：自定义正则（regex-scan reader 用）；缺省为 Qoder dt-/pt- 形态（行为不变）。
- *  opts.kind：自定义命中分类标签（缺省按 pt- 前缀判 PAT，否则 device）。 */
-export async function scanLocalTokens(dirs, { pattern, kind } = {}) {
+/** 扫描目录集合，产出候选 token（含少量上下文以辅助辨认）——本模块 Qoder legacy 链路专用 */
+export async function scanLocalTokens(dirs) {
   const deadline = Date.now() + MAX_MS;
   const found = new Map(); // token → { file, count }
   let scanned = 0;
@@ -147,7 +147,7 @@ export async function scanLocalTokens(dirs, { pattern, kind } = {}) {
       scanned++;
       let text;
       try { text = await fsp.readFile(p, 'utf8'); } catch { continue; }
-      for (const token of extractTokens(text, pattern)) {
+      for (const token of extractTokens(text)) {
         const prev = found.get(token);
         if (prev) prev.count++;
         else found.set(token, { file: p, count: 1 });
@@ -165,7 +165,7 @@ export async function scanLocalTokens(dirs, { pattern, kind } = {}) {
     list.push({
       id,
       tokenMasked: mask(token),
-      kind: token.startsWith('pt-') ? 'PAT' : (kind || 'device'),
+      kind: token.startsWith('pt-') ? 'PAT' : 'device',
       file: meta.file,
       hits: meta.count,
     });

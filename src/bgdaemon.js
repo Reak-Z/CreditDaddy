@@ -31,8 +31,10 @@ const CLI_ENTRY = path.join(__dirname, '..', 'bin', 'creditdaddy.js');
 const DEFAULT_PORT = 47860;
 const DEFAULT_HOST = '127.0.0.1';
 
-// 后台启动最多等这么久：daemon 要读账号库、建 HTTP server、起签到定时器，冷启动慢一点正常
-const READY_TIMEOUT_MS = 30_000;
+// 后台启动最多等这么久：daemon 要读账号库、建 HTTP server、起签到定时器，冷启动慢一点正常。
+// 沙箱/高负载下 /api/status 单次 10-20s（DPAPI 走 powershell.exe、各客户端探测 5s+），30s 死线
+// 曾把「其实 1.9s 就绪、只是探针被拖住」误报成启动超时；放到 60s 留足余量（用户真机稳态 ~2s）。
+const READY_TIMEOUT_MS = 60_000;
 const READY_INTERVAL_MS = 250;
 // /api/status 需要 DPAPI 解密与本机进程探测，冷机/高负载下单次可达 2-4s（实测 Windows 稳态 ~1.9s）。
 // 2.5s 的探测超时和稳态耗时贴边，机器一忙就出现「探针永远超时 → 误判启动失败」的抖动，宽限到 8s。

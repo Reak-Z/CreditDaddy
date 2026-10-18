@@ -1,5 +1,5 @@
 /**
- * T02 注册表扫描：detectToolInstalls 泛化探测 / scanLocalTokens 正则参数化 /
+ * T02 注册表扫描：detectToolInstalls 泛化探测 / scanLocalTokens 缺省形态 /
  * dpapi-json 与 custom reader 分发 / daemon /api/tools 与 /api/local/scan 路由。
  * 一律临时目录 + 本地假服务，不依赖开发机装了什么 AI 软件。
  */
@@ -35,16 +35,16 @@ test('detectToolInstalls：file 探测命中/未命中，process 探测只断言
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('scanLocalTokens：正则参数化（自定义 pattern + kind），缺省行为不变', async () => {
+test('scanLocalTokens：缺省 dt-/pt- 形态命中（Qoder legacy 链路；自定义 pattern 走 regexScan reader）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cd-scan-'));
   try {
-    fs.writeFileSync(path.join(dir, 'a.json'), 'tk_ABCDEFGHIJKLMNOP');
-    const r = await scanLocalTokens([dir], { pattern: '\\btk_[A-Za-z0-9]{8,}\\b', kind: 'cli' });
+    fs.writeFileSync(path.join(dir, 'a.json'), 'x dt-ABCDEFGHIJKLMNOPQRST y');
+    const r = await scanLocalTokens([dir]);
     assert.equal(r.candidates.length, 1);
-    assert.equal(r.candidates[0].kind, 'cli');
+    assert.equal(r.candidates[0].kind, 'device');
     assert.ok(r.candidates[0].tokenMasked.includes('...'), '只回脱敏值');
-    const legacy = await scanLocalTokens([dir]);   // 缺省 pattern：不命中 tk_ 形态
-    assert.equal(legacy.candidates.length, 0);
+    fs.writeFileSync(path.join(dir, 'b.json'), 'tk_ABCDEFGHIJKLMNOP');   // 非 dt-/pt- 形态不命中
+    assert.equal((await scanLocalTokens([dir])).candidates.length, 1);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -1744,14 +1744,19 @@ async function handleApi(req, res, url) {
       await saveSettings({ workbuddyActivity: body.workbuddyActivity });
       return json(res, 200, { ok: true });
     }
-    // 开机自启（面板「设置 → 通用」）：schtasks 注册/移除 + 偏好落盘（桌面壳另有托盘入口，两套并存）
+    // 开机自启（面板「设置 → 通用」）：schtasks 注册/移除 + 偏好落盘（桌面壳另有托盘入口，两套并存）。
+    // 到期提醒配置（F4）：总开关 + 提前天数（1-14，默认 3）。
+    // 两者可在同一请求体里同时携带：各自处理、不互斥早退，成功字段合并回包；
+    // autostart 的 schtasks 失败优先报错（reminder 纯本地写盘，不会失败）。
+    let settingsHandled = false;
+    const settingsPayload = {};
     if (typeof body?.autostart === 'boolean') {
       const r = setAutostart(body.autostart);
       if (!r.ok) return json(res, 502, { error: r.error || '设置开机自启失败（可改用桌面壳托盘菜单）' });
       await saveSettings({ autostart: body.autostart });
-      return json(res, 200, { ok: true, autostart: autostartStatus() });
+      settingsHandled = true;
+      settingsPayload.autostart = autostartStatus();
     }
-    // 到期提醒配置（F4）：总开关 + 提前天数（1-14，默认 3）
     if (body?.reminder !== undefined) {
       const r = body.reminder;
       if (!r || typeof r !== 'object' || Array.isArray(r)) return json(res, 400, { error: 'reminder 必须是对象' });
@@ -1761,8 +1766,10 @@ async function handleApi(req, res, url) {
       if (!Object.keys(patch).length) return json(res, 400, { error: 'reminder 未携带任何设置字段' });
       const cur = (await loadSettings()).reminder || {};
       await saveSettings({ reminder: { ...cur, ...patch } });
-      return json(res, 200, { ok: true, reminder: { ...cur, ...patch } });
+      settingsHandled = true;
+      settingsPayload.reminder = { ...cur, ...patch };
     }
+    if (settingsHandled) return json(res, 200, { ok: true, ...settingsPayload });
     // 只有携带密码字段才走密码分支：纯语言/其它设置的请求此前会掉进
     // 「请提供新密码」400，面板 api() 抛错导致语言切换点了不刷新（i18n 切换失效根因）
     if (body?.panelKey !== undefined || body?.disable === true) return await handleSettingsPut(res, body);

@@ -109,6 +109,19 @@ test('daemon：/api/status.expiring + /api/reminders + dismiss + settings remind
     });
     assert.equal(put.status, 200);
     assert.deepEqual((await put.json()).reminder, { enabled: false, daysBefore: 7 });
+    // 同体处理：autostart + reminder 一个请求体都生效（不互斥早退；fake exec 免真调 schtasks）
+    const auto = await import('../src/autostart.js');
+    auto._setExecForTests(() => '');
+    try {
+      const both = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autostart: false, reminder: { enabled: true, daysBefore: 5 } }),
+      });
+      assert.equal(both.status, 200);
+      const bb = await both.json();
+      assert.ok('autostart' in bb && 'reminder' in bb, '同体两者都处理');
+      assert.deepEqual(bb.reminder, { enabled: true, daysBefore: 5 });
+    } finally { auto._setExecForTests(null); }
     await saveSettings({ reminder: { enabled: true, daysBefore: 3 } });
   } finally {
     server.close();
