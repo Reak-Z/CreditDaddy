@@ -305,6 +305,13 @@
   .cand-group .tag { font-size: 10px; font-weight: 400; color: var(--text-3); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 1px 5px; }
   /* 零账号引导卡：候选行可点选（label 包整行） */
   .cand input.onboard-chk { flex: none; margin-right: 4px; }
+  /* 积分快照陈旧标注（F3 看板）与工具覆盖小卡 */
+  .stale-tag { font-size: 11px; color: var(--warn); }
+  .tool-cov-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
+  .tool-cov-row:last-child { border-bottom: none; }
+  .tool-cov-row .tcr-main { min-width: 0; display: flex; align-items: center; gap: 6px; }
+  .tool-cov-row .tcr-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-cov-row .tcr-side { flex: none; color: var(--text-3); }
   .cand .row { flex: none; flex-wrap: nowrap; gap: 6px; }
   .cand-main { min-width: 0; }
   .cand-name { font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -475,6 +482,7 @@
                     <option value="240" data-i18n="每 4 小时">每 4 小时</option>
                     <option value="480" data-i18n="每 8 小时">每 8 小时</option>
                   </select>
+                  <span class="hint" id="cfg-next-tick"></span>
                 </div>
                 <div class="hint" data-i18n="作用于全部产品的定时签到轮(ZCode 活动领取在自身页签单独配置);修改立即生效,下一轮按新间隔执行。">作用于全部产品的定时签到轮(ZCode 活动领取在自身页签单独配置);修改立即生效,下一轮按新间隔执行。</div>
               </div>
@@ -596,6 +604,7 @@
     <div class="dash-cols">
       <section class="pcard" data-fold="recent"><div class="pcard-title fold-head"><span data-i18n="最近记录">最近记录</span><span class="fold-side"><span class="hint" id="last-tick"></span><span class="fold-ico"></span></span></div><div class="fold-body"><div id="recent"></div></div></section>
       <section class="pcard" data-fold="attention"><div class="pcard-title fold-head"><span data-i18n="需要处理">需要处理</span><span class="fold-side"><span class="hint" id="att-count"></span><span class="fold-ico"></span></span></div><div class="fold-body"><div id="attention"></div></div></section>
+      <section class="pcard" data-fold="tools"><div class="pcard-title fold-head"><span data-i18n="工具覆盖">工具覆盖</span><span class="fold-side"><span class="hint" id="tool-cov-count"></span><span class="fold-ico"></span></span></div><div class="fold-body"><div id="tool-coverage-card"><div class="muted-empty">加载中…</div></div></div></section>
     </div>
   </section>
 
@@ -1012,7 +1021,7 @@ const I = {
 };
 
 const $ = (id) => document.getElementById(id);
-const state = { accounts: [], quotas: {}, status: null, busy: {}, view: 'dash', region: '', addProduct: '', logTab: 'run', logLevel: 'all', locale: 'zh-CN' };
+const state = { accounts: [], quotas: {}, status: null, busy: {}, view: 'dash', region: '', addProduct: '', logTab: 'run', logLevel: 'all', locale: 'zh-CN', tools: [], toolsErrors: [] };
 const VIEWS = ['dash', 'qoder', 'workbuddy', 'zcode', 'mirasim', 'catpaw', 'trae', 'minimax', 'free', 'tenrouter'];
 // 10Router 集成：config 来自 /api/tenrouter，quotas 来自 /api/tenrouter/quotas
 const tr = { config: null, quotas: null, error: null, loading: false, syncing: false };
@@ -1313,6 +1322,14 @@ function fillAutoCheckin() {
   if (!sc) return;
   $('cfg-auto-checkin').checked = sc.enabled !== false;
   $('cfg-checkin-interval').value = String(sc.intervalMin || 120);
+  // 下次自动签到倒计时（F3 看板：调度状态常显）
+  const next = $('cfg-next-tick');
+  if (next) {
+    next.textContent = sc.enabled === false ? T('自动签到已关闭')
+      : sc.ticking ? T('领取中…')
+        : sc.nextTickAt ? T('下次约 ') + fmtTime(sc.nextTickAt).slice(11, 16) + T('（每 ') + (sc.intervalMin || 120) + T(' 分钟）')
+          : T('每 ') + (sc.intervalMin || 120) + T(' 分钟一轮');
+  }
 }
 // 开机自启开关：/api/status.autostart（supported=false 时整段隐藏——桌面壳场景走托盘菜单）
 function fillAutostart() {
@@ -1652,6 +1669,31 @@ function creditHtml(a) {
     + '</div><div class="bar">' + bar + '</div>';
 }
 
+/** 积分快照陈旧标注（F3）：快照 >25h（或 live 失败回退旧快照）时在卡内提示，点刷新按钮（live=1）更新 */
+function quotaStaleHtml(a) {
+  const q = state.quotas[a.id];
+  if (!q || q.error || !q.stale) return '';
+  const at = q.staleSince ? fmtTime(q.staleSince).slice(5, 16) : '—';
+  const title = T('积分快照写入于 ') + esc(at) + (q.liveError ? T('；本次刷新失败：') + esc(q.liveError) : '') + T('。点右上角刷新按钮获取最新数据');
+  return '<div class="credit-line"><span class="stale-tag" title="' + title + '">' + T('积分数据 ') + esc(at) + (q.liveError ? T('（刷新失败，为旧数据）') : T('（陈旧）')) + '</span></div>';
+}
+
+/** 账号卡「最早到期」列（F3）：quota.parts 中 remaining>0 且非周期重置的 expiresAt 最早者；
+ *  ≤3 天黄色、≤1 天/已过期红色；无数据的工具不显示（不编造）。 */
+function quotaExpiryCell(a) {
+  const q = state.quotas[a.id];
+  if (!q || q.error || !q.parts || !q.parts.length) return '';
+  const soon = q.parts.filter((x) => x.remaining > 0 && x.expiresAt && x.recurring !== true)
+    .sort((x, y) => String(x.expiresAt).localeCompare(String(y.expiresAt)))[0];
+  if (!soon) return '';
+  const ms = new Date(soon.expiresAt).getTime() - Date.now();
+  const days = ms / 86400e3;
+  // ≤1 天/已过期红色（内联色，与卡片其它红色同口径）；≤3 天黄色（既有 warn 类）；其余中性
+  const attr = days <= 1 ? ' style="color:var(--err)"' : days <= 3 ? ' class="val warn"' : '';
+  const label = ms <= 0 ? T('已过期') : fmtTime(soon.expiresAt).slice(5, 10) + T(' 到期');
+  return '<div class="mi right"><span class="lbl">' + T('最早到期') + '</span><span' + attr + ' title="' + esc(soon.name || '') + ' ' + esc(fmtTime(soon.expiresAt)) + '">' + label + '</span></div>';
+}
+
 function cardHtml(a) {
   const st = statusOf(a);
   const ex = expiryCell(a);
@@ -1680,9 +1722,11 @@ function cardHtml(a) {
     + '</div></div>'
     + '<div class="meta">'
     + '<div class="mi"><span class="lbl">' + T('账号') + '</span><span class="val" title="' + esc(a.email || a.phone || a.uid || '') + '">' + esc(a.phone && !a.email ? ident : mask(ident)) + '</span></div>'
+    + quotaExpiryCell(a)
     + '<div class="mi right"><span class="lbl">' + (ex.isPlan ? T('套餐到期') : ex.isAuto ? T('凭据状态') : T('有效期至')) + '</span>'
     + '<span class="val' + (ex.warn ? ' warn' : '') + '" title="' + esc(ex.title || '') + '">' + esc(ex.label) + '</span></div>'
     + '</div>'
+    + quotaStaleHtml(a)
     + creditHtml(a)
     + (st.msg && !(state.quotas[a.id] && state.quotas[a.id].error && state.quotas[a.id].error.includes(st.msg.slice(-24)))
       ? '<div class="msg' + (st.err ? ' err' : '') + '" title="' + esc(T(st.msg)) + '">' + esc(T(st.msg)) + '</div>' : '')
@@ -2011,6 +2055,7 @@ function renderDash() {
     : '<div class="muted-empty">' + T('还没有领取记录') + '</div>';
 
   renderOnboarding();   // 零账号引导卡（有账号即隐藏，不占仪表盘）
+  renderToolCoverage();   // 工具覆盖小卡（注册表工具：已注册 / 已导入 / 未发现）
 }
 
 function renderStatus() {
@@ -3092,6 +3137,37 @@ async function loadAccounts() {
   renderStatus();
   loadQuotas();
 }
+// 工具注册表（tools.d）状态：工具覆盖小卡数据源（已注册 / 已导入 / 未发现）
+async function loadTools() {
+  try {
+    const d = await api('/api/tools');
+    state.tools = (d.tools || []).filter((t) => t.active);
+    state.toolsErrors = d.errors || [];
+    render();
+  } catch (e) { /* 注册表不可用时不挡仪表盘 */ }
+}
+/** 工具覆盖小卡（F3）：每个注册表工具一行——已导入 N 个 / 未导入（附安装状态与登录提示） */
+function renderToolCoverage() {
+  const box = $('tool-coverage-card');
+  if (!box) return;
+  const tools = state.tools || [];
+  if (!tools.length) { box.innerHTML = '<div class="muted-empty">' + T('没有已注册的工具（tools.d 配置驱动，加 JSON 即接入）') + '</div>'; $('tool-cov-count').textContent = ''; return; }
+  let importedTools = 0;
+  const rows = tools.map((t) => {
+    const n = state.accounts.filter((a) => a.provider === t.provider).length;
+    if (n) importedTools++;
+    const side = n ? T('已导入 ') + n + T(' 个')
+      : t.installed === false ? T('未安装客户端')
+        : T('未导入');
+    const hint = n ? '' : T('title="在该工具的客户端里登录一次，再到「添加账号 → 本机导入」扫描导入"');
+    return '<div class="tool-cov-row" ' + hint + '><span class="tcr-main"><span class="tcr-name">' + esc(t.name) + '</span>'
+      + (t.installed === false ? '<span class="badge">' + T('未安装') + '</span>' : '')
+      + (t.checkin ? '<span class="badge">' + T('可签到') + '</span>' : '')
+      + '</span><span class="tcr-side">' + side + '</span></div>';
+  }).join('');
+  box.innerHTML = rows;
+  $('tool-cov-count').textContent = T('注册 ') + tools.length + T(' · 已导入 ') + importedTools + T(' · 未发现 ') + (tools.length - importedTools);
+}
 // 轻量刷新账号列表（只重拉 /api/accounts + 重绘，不重查每账号额度）：
 // 「缺网页会话」徽章的数据源 qoderWebCapturedAt 在账号 meta 里，网页会话是在登录窗
 // 关闭时才收割绑定的（晚于登录成功提示数秒），登录成功后与周期轮询里都要按这个口径补拉。
@@ -3109,7 +3185,13 @@ async function loadQuotas(ids, opts) {
   const worker = async () => {
     while (queue.length && run === quotaRun) {
       const id = queue.shift();
-      try { state.quotas[id] = (await api('/api/accounts/' + encodeURIComponent(id) + '/quota' + (live ? '?live=1' : ''))).quota; }
+      try {
+        // 默认快照（零网络）；live=1（刷新积分按钮）才真打上游。staleSince/stale 供「陈旧」标注（T04）
+        const d = await api('/api/accounts/' + encodeURIComponent(id) + '/quota' + (live ? '?live=1' : ''));
+        state.quotas[id] = d.quota
+          ? { ...d.quota, staleSince: d.staleSince || null, stale: !!d.stale, ...(d.error ? { liveError: d.error } : {}) }
+          : { error: d.error || '查询失败' };
+      }
       catch (e) { state.quotas[id] = { error: e.message }; }
       render();
     }
@@ -4646,7 +4728,7 @@ function hideBootBusy() { const b = $('boot-busy'); if (!b) return; clearTimeout
     hideBootBusy._t = setTimeout(hideBootBusy, 9000);
     applyDictFromServer().then(() => {
     window.__syncTheme?.();   // 头部主题按钮的图标/标题在字典到达后重渲染（initTheme 时字典还没到，T() 当时只能回落中文）
-    loadStatus().then(loadAccounts).then(hideBootBusy, (e) => { toast(e.message, false); hideBootBusy(); });
+    loadStatus().then(loadAccounts).then(() => loadTools()).then(hideBootBusy, (e) => { toast(e.message, false); hideBootBusy(); });
     loadSettings().then(renderCompMenu);
     loadZNet();
     loadZGateway();

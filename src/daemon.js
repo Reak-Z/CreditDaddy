@@ -12,7 +12,7 @@
  *   PATCH  /api/accounts/:id           修改备注名 {name}
  *   DELETE /api/accounts/:id           删除账号
  *   POST   /api/accounts/:id/checkin   手动为单个账号签到
- *   GET    /api/accounts/:id/quota     查询积分（统一结构）
+ *   GET    /api/accounts/:id/quota     查询积分（统一结构；默认快照零网络，?live=1 才真打上游，见 T04 语义变化）
  *   POST   /api/accounts/:id/switch    切换 WorkBuddy / ZCode 客户端当前登录账号 {force?}
  *   GET    /api/accounts/:id/zcode/plans   ZCode 可领取的活动列表
  *   POST   /api/accounts/:id/zcode/claim   ZCode 领取活动 {planId, captchaParam?, region?}
@@ -53,7 +53,7 @@ import { logger, getLogs, readArchiveJsonl } from './logger.js';
 import {
   loadAccounts, loadState, withAccounts, publicAccount, dataDir, loadSettings, saveSettings, withSettings, normalizeAccountInput,
 } from './store.js';
-import { addAccount, importAccounts, refreshContext } from './accounts.js';
+import { addAccount, importAccounts } from './accounts.js';
 import { productImpl } from './providers.js';
 import { readWorkbuddySessions, writeWorkbuddySession, workbuddyAuthDir, currentWorkbuddyUid } from './workbuddyLocal.js';
 import { refreshWorkbuddyToken } from './workbuddyClient.js';
@@ -79,6 +79,7 @@ import { startDeviceFlow, pollDeviceFlow, LOGIN_KINDS } from './authDevice.js';
 import { detectInstalls, scanLocalTokens, detectToolInstalls, putCandidate, peekCandidate } from './localDetect.js';
 import { loadToolDefs, reloadToolDefs, activeToolDefs, toolDefs, registryLoadErrors, userToolsDirPath } from './toolRegistry.js';
 import { readCredentials } from './toolReaders/index.js';
+import { aggregateQuotas } from './quotaAggregator.js';
 import { PROVIDER_LABEL, APP_VERSION, PROVIDERS, PROJECT_URL } from './constants.js';
 import { getLocale, setLocale, normalizeLocale, loadDict, t as tr } from './i18n.js';
 
@@ -694,9 +695,18 @@ async function handleApi(req, res, url) {
       } });
     }
     try {
-      const log = (m) => logger.info('QUOTA', '{name}:{msg}', { name: account.name || account.id, msg: m });
-      const ctx = { log, ...refreshContext(account, log) };
-      return json(res, 200, { quota: await productImpl(account.provider).quota(account, ctx) });
+      // 语义变化（D6，CHANGELOG 明示）：默认读签到轮写的快照（零网络），仅 ?live=1（面板
+      // 「刷新积分」按钮 / 单卡回调）才真打上游并回填快照。响应带 staleSince/stale：
+      // 陈旧（>25h）或 live 失败时有旧快照照常回（面板标注），无快照才 502 提示点刷新。
+      const item = (await aggregateQuotas([account], { live: url.searchParams.get('live') === '1' })).get(account.id);
+      if (!item) return json(res, 502, { error: '额度查询失败' });
+      if (item.error && !item.quota) return json(res, 502, { error: item.error });
+      return json(res, 200, {
+        quota: item.quota,
+        staleSince: item.staleSince ?? null,
+        stale: Boolean(item.stale),
+        ...(item.error ? { error: item.error } : {}),
+      });
     } catch (e) {
       return json(res, 502, { error: e.message });
     }

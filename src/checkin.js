@@ -7,6 +7,7 @@ import { loadAccounts, loadSettings, loadState, withAccounts, withState } from '
 import { productImpl } from './providers.js';
 import { productOf, PROVIDER_LABEL } from './constants.js';
 import { registryDayRefreshHour } from './toolRegistry.js';
+import { aggregateQuotas } from './quotaAggregator.js';
 import { startUsageSyncScheduler } from './tenrouter.js';
 import { refreshContext } from './accounts.js';
 import { zcodeAutoClaim } from './zcodeAutoClaim.js';
@@ -329,6 +330,18 @@ async function runTickInner(opts) {
     const zResult = await runZcodeTick(new Set(zAccounts.map((a) => a.id)));
     results.push(...zResult.results);
   }
+
+  // 轮末积分快照刷新（F3 看板 L2 后台保活，best-effort）：给每个有 quota 能力的账号顺带刷一次，
+  // 写 meta.quotaSnapshot 供面板 L0 快照读取（默认零网络，见 quotaAggregator 三级模型）。
+  // 失败只记日志不打断签到汇总——聚合器内部已做单账号隔离，这里兜的是意外。
+  try {
+    const quotaCapable = allAccounts.filter((a) => typeof productImpl(a.provider)?.quota === 'function');
+    if (quotaCapable.length) {
+      const agg = await aggregateQuotas(quotaCapable, { live: true });
+      const errN = [...agg.values()].filter((v) => v.error).length;
+      if (errN) logger.debug('QUOTA', '轮末快照刷新 {n}/{total} 个账号失败', { n: errN, total: quotaCapable.length });
+    }
+  } catch (e) { logger.debug('QUOTA', '轮末快照刷新失败:{err}', { err: e?.message || e }); }
 
   const claimed = results.filter((r) => r.status === 'checked-in');
   const failed = results.filter((r) => r.status === 'failed');
