@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+- **【2026-10-20】卡顿修复加固（QA 复查两项）**：1) 修复 `probeStatus` in-flight 竞态——bust 若落在在途 collect 的执行窗口（冷/全量重算秒级）内，collect 完成时的无条件回填会把 bust 覆盖，导致陈旧探测数据继续驻留 5min。引入 generation 计数器：每次 collect 启动前捕获当前代，回填缓存与清理 in-flight 前都比对代，仅「计算期间没有 bust 过」才生效；`bustProbeStatus()` 递增代并断开在途 collect（后续请求立即开新计算，不排队等旧结果）。同代并发请求仍共享一次 collect（去重语义不破）。配套测试后门 `_probeStats`（collects 计数/代/缓存态）与 `_setProbeGate`（collect 挂起门槛，把 bust 精确放进在途窗口）；竞态与去重两个用例经合成旧逻辑验证有效（回退代守卫即挂）。2) `/api/qoder/umid/install` 安装成功分支补 `bustProbeStatus()`（umid/riskIdentity/riskSource 进探测族，补一行与其它 bust 点一致）。自测：冷启全量 6s → 命中 3-6ms → bust 后 3.2s 正常重算，缓存未被 generation 方案打废。全量串行 333/338，4 失败为沙箱预存集合，0 新增。
+- **【2026-10-20】修复桌面壳卡顿（用户反馈"用起来感觉很卡"）**：根因是守护进程与 Electron 主进程同事件循环，`/api/status` 的本机探测族含多个**同步**外部进程调用（Trae 四变体逐个 tasklist、mirasim/妙手/MiniMax 各一次 tasklist、Qoder 注册表查询与 DPAPI 解密），实测单次 8.8s（沙箱）/ 秒级（高负载真机）——面板 30s 轮询 + 托盘 5min 轮询反复把主进程占住，窗口拖动/点击/菜单全部卡住。双保险修复（最小变更、不动探测语义）：
+  1. `src/winProc.js` 新增 `anyProcRunningFast(exes)`：一次全量 `tasklist /FO CSV` + 1.5s 进程表缓存，本地匹配任意 exe 集合；`traeLocal`/`mirasimLocal`/`catpawLocal`/`minimaxLocal` 四家 `*Running` 改为共用这一次查询（Trae 从 4 连击降到 1 次，单轮全量 8.8s→3.4-6s）。
+  2. `src/daemon.js` `/api/status` 探测族结果缓存（5min TTL + 并发去重）：无操作时轮询命中微秒级；账号增删/导入/切换/设备码登录成功的路由调用 `bustProbeStatus()` 立即可见最新状态（观察类数据最多滞后 5min，账号列表/签到状态/调度倒计时本就不走缓存）。
+  修复后实测：status 轮询命中 3-6ms（原 8.8s）、面板 6 API 轮询合计 14ms（原 8.9s）、bust 后一击 3.4s（写操作路径，预期内）。回归 4 项（进程表匹配语义 / 缓存命中 ms 级 / bust 重回全量 / status 结构完整）。**未改**：GPU 配置（默认硬件加速开启，根因是主进程同步阻塞而非渲染）、签到轮（网络 await 不占事件循环）、上游原生托盘自启。
 - **【2026-10-20】修复桌面壳卡顿（用户反馈"用起来感觉很卡"）**：根因是守护进程与 Electron 主进程同事件循环，`/api/status` 的本机探测族含多个**同步**外部进程调用（Trae 四变体逐个 tasklist、mirasim/妙手/MiniMax 各一次 tasklist、Qoder 注册表查询与 DPAPI 解密），实测单次 8.8s（沙箱）/ 秒级（高负载真机）——面板 30s 轮询 + 托盘 5min 轮询反复把主进程占住，窗口拖动/点击/菜单全部卡住。双保险修复（最小变更、不动探测语义）：
   1. `src/winProc.js` 新增 `anyProcRunningFast(exes)`：一次全量 `tasklist /FO CSV` + 1.5s 进程表缓存，本地匹配任意 exe 集合；`traeLocal`/`mirasimLocal`/`catpawLocal`/`minimaxLocal` 四家 `*Running` 改为共用这一次查询（Trae 从 4 连击降到 1 次，单轮全量 8.8s→3.4-6s）。
   2. `src/daemon.js` `/api/status` 探测族结果缓存（5min TTL + 并发去重）：无操作时轮询命中微秒级；账号增删/导入/切换/设备码登录成功的路由调用 `bustProbeStatus()` 立即可见最新状态（观察类数据最多滞后 5min，账号列表/签到状态/调度倒计时本就不走缓存）。

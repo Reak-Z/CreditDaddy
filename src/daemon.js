@@ -515,17 +515,39 @@ function noteKeyMiss(remote) {
 //   3) 写操作路由（添加/导入/删除/切换账号）后 bustProbeStatus() 立即可见最新状态
 // 观察类数据（客户端装没装/在不在跑）最多滞后 5min；账号列表/签到状态/调度倒计时
 // 本来就是实时字段，不走本缓存。
+//
+// 代（generation）机制：bust 若落在一次在途 collect 的执行窗口（冷/全量重算秒级）内，
+// collect 完成时的无条件回填会把 bust 覆盖掉 → 陈旧数据继续驻留 5min。每次 collect
+// 启动前捕获当前代；回填缓存与清理 in-flight 前都比对代，仅「计算期间没有 bust 过」
+// 才生效；bustProbeStatus 递增代并断开在途 collect（后续请求立即开新计算，不排队等旧结果）。
+// 去重语义不受影响：同代并发请求仍共享同一次 collect。
 const PROBE_TTL_MS = 5 * 60 * 1000;
+let probeGen = 0;
 let probeCache = { at: 0, data: null };
 let probeInflight = null;
+let probeCollectCount = 0;   // collect 实际执行次数（测试/诊断观测：验证竞态与去重语义）
 
-/** 写操作后作废探测族缓存（账号增删/导入/切换客户端账号） */
+/** 探测族内部计数（测试专用：collects 执行次数 / 当前代 / 缓存是否可用） */
+export function _probeStats() {
+  return { collects: probeCollectCount, gen: probeGen, cached: Boolean(probeCache.data) };
+}
+
+// 测试后门：collect 执行中挂起的门槛（竞态测试用——把 bust 精确放进在途窗口）。
+// 生产恒 null，零成本；用法见 test/probe-cache.test.js。
+let probeCollectGate = null;
+export function _setProbeGate(promise) { probeCollectGate = promise || null; }
+
+/** 写操作后作废探测族缓存（账号增删/导入/切换客户端账号/umid 安装） */
 export function bustProbeStatus() {
+  probeGen += 1;                        // 作废在途 collect 的回填资格（竞态修复）
   probeCache = { at: 0, data: null };
+  probeInflight = null;                 // 断开在途 collect：后续请求开新计算，不等旧结果
 }
 
 /** 探测族全量计算（原 /api/status handler 的探测部分，语义不变） */
 async function collectProbeStatus(accounts) {
+  probeCollectCount += 1;
+  if (probeCollectGate) await probeCollectGate;   // 测试门槛（生产 null）：挂起在途 collect 供竞态复现
   // Qoder 当前登录（DPAPI 解密结果在 qoderApp 内另有 1 分钟缓存）
   const qoder = await qoderCurrentInfo();
   // 旧账号没赶上「整份 auth 快照」的导入：本机 Qoder 有登录且账号库里有缺快照的同 uid 账号时，顺手回填（可逆、只在缺失时发生）
@@ -587,10 +609,14 @@ async function collectProbeStatus(accounts) {
 /** 探测族读取（5min TTL + 并发去重；首次/过期后并发请求只跑一次全量） */
 async function probeStatus(accounts) {
   if (probeCache.data && Date.now() - probeCache.at < PROBE_TTL_MS) return probeCache.data;
+  const gen = probeGen;   // 本次 collect 的代：完成回填/清 in-flight 前比对，bust 过（代变）则丢弃
   if (!probeInflight) {
     probeInflight = collectProbeStatus(accounts)
-      .then((data) => { probeCache = { at: Date.now(), data }; return data; })
-      .finally(() => { probeInflight = null; });
+      .then((data) => {
+        if (gen === probeGen) probeCache = { at: Date.now(), data };   // 代未变才回填，避免覆盖 bust
+        return data;
+      })
+      .finally(() => { if (gen === probeGen) probeInflight = null; });   // 旧代不清新代的在途标记
   }
   return probeInflight;
 }
@@ -1718,6 +1744,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/qoder/umid/install' && method === 'POST') {
     try {
       await installUmid();
+      bustProbeStatus();   // umid/riskIdentity/riskSource 进了探测族：安装成功立即可见（响应虽带回 fresh 值，缓存也不能留旧）
       return json(res, 200, { ok: true, ...umidInfo(), riskIdentity: riskIdentityAvailable(), riskSource: riskIdentitySource() });
     } catch (e) { return json(res, 500, { error: e.message }); }
   }

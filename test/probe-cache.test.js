@@ -71,3 +71,72 @@ test('/api/status 结构完整：探测族字段与实时字段都在，缓存�
     await closeArchiveStream();
   }
 });
+
+test('竞态修复：bust 落在在途 collect 窗口内 → 后续请求必须全新计算（不被在途回填覆盖）', async () => {
+  const { startDaemon, bustProbeStatus, _probeStats, _setProbeGate } = await import('../src/daemon.js');
+  const { closeArchiveStream } = await import('../src/logger.js');
+  const { server, port } = await startDaemon(0, '127.0.0.1');
+  const time = async () => { const t0 = Date.now(); const r = await fetch(`http://127.0.0.1:${port}/api/status`); await r.json(); return Date.now() - t0; };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 轮询等待 collect 计数到位（消除「请求到达 daemon」的固定 sleep 时序抖动）
+  const waitCollects = async (n, timeoutMs = 5000) => {
+    const t0 = Date.now();
+    while (_probeStats().collects < n && Date.now() - t0 < timeoutMs) await sleep(20);
+  };
+  try {
+    // 测试目录里 collect 是毫秒级（无真实客户端数据），靠挂起门槛把 bust 精确放进在途窗口
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const base = _probeStats().collects;   // 增量口径：collects 是进程级累加计数（跨测试）
+    _setProbeGate(gate);
+    bustProbeStatus();
+    const cold = time();               // 启动 collect#1 并挂起在门槛上（在途）
+    await waitCollects(base + 1);      // 确保 daemon 已进入 collect#1
+    assert.equal(_probeStats().collects, base + 1, 'collect#1 应已启动并挂在门槛上');
+    bustProbeStatus();                 // 落在在途窗口内：代 +1、清缓存、断在途
+    const before = _probeStats().collects;
+    release();                         // 放行 collect#1（旧逻辑此刻会回填覆盖 bust）
+    const after = await time();        // 新逻辑：在途已被断 → 开 collect#2；旧逻辑：搭 collect#1 旧结果
+    assert.equal(_probeStats().collects, before + 1, 'bust 后必须执行一次全新计算（在途结果按代丢弃）');
+    await cold;                        // collect#1 最终完成：回填被代比对丢弃
+    assert.equal(_probeStats().collects, before + 1, '旧 collect 完成不得触发额外计算');
+    const hit = await time();
+    assert.ok(hit < 200, `新 collect 的结果应已入缓存（实得 ${hit}ms）`);
+    assert.ok(after >= 0);
+  } finally {
+    _setProbeGate(null);
+    server.close();
+    await closeArchiveStream();
+  }
+});
+
+test('去重语义不破：同代并发请求共享一次 collect（门槛挂起期间 3 并发只跑 1 次）', async () => {
+  const { startDaemon, bustProbeStatus, _probeStats, _setProbeGate } = await import('../src/daemon.js');
+  const { closeArchiveStream } = await import('../src/logger.js');
+  const { server, port } = await startDaemon(0, '127.0.0.1');
+  const time = async () => { const t0 = Date.now(); const r = await fetch(`http://127.0.0.1:${port}/api/status`); await r.json(); return Date.now() - t0; };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const waitCollects = async (n, timeoutMs = 5000) => {
+    const t0 = Date.now();
+    while (_probeStats().collects < n && Date.now() - t0 < timeoutMs) await sleep(20);
+  };
+  try {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const base = _probeStats().collects;
+    _setProbeGate(gate);
+    bustProbeStatus();
+    const reqs = [time(), time(), time()];   // 同代并发：第一个开 collect 并挂起，后两个应搭它
+    await waitCollects(base + 1);
+    assert.equal(_probeStats().collects, base + 1, '3 并发只启动一次 collect（其余搭在途）');
+    release();
+    await Promise.all(reqs);
+    assert.equal(_probeStats().collects, base + 1, '放行后仍只算一次');
+    const hit = await time();
+    assert.ok(hit < 200 && _probeStats().collects === base + 1, '缓存可用且不再触发计算');
+  } finally {
+    _setProbeGate(null);
+    server.close();
+    await closeArchiveStream();
+  }
+});
