@@ -488,11 +488,6 @@
                 </div>
                 <div class="hint" data-i18n="作用于全部产品的定时签到轮(ZCode 活动领取在自身页签单独配置);修改立即生效,下一轮按新间隔执行。">作用于全部产品的定时签到轮(ZCode 活动领取在自身页签单独配置);修改立即生效,下一轮按新间隔执行。</div>
               </div>
-              <div class="field" id="cfg-autostart-field" style="display:none">
-                <label data-i18n="开机自启">开机自启</label>
-                <label class="check"><input type="checkbox" id="cfg-autostart"> <span data-i18n="开机自动启动（Windows 计划任务，当前用户免管理员）">开机自动启动（Windows 计划任务，当前用户免管理员）</span></label>
-                <div class="hint" data-i18n="无桌面壳时用 Windows 计划任务在登录后自动运行 creditdaddy start（start 幂等，重复触发无副作用）；桌面版也可在托盘菜单设置。">无桌面壳时用 Windows 计划任务在登录后自动运行 creditdaddy start（start 幂等，重复触发无副作用）；桌面版也可在托盘菜单设置。</div>
-              </div>
               <div class="field">
                 <label data-i18n="积分到期提醒">积分到期提醒</label>
                 <label class="check"><input type="checkbox" id="cfg-reminder"> <span data-i18n="开启积分过期提醒（面板徽标 + 桌面通知 + 本地日志）">开启积分过期提醒（面板徽标 + 桌面通知 + 本地日志）</span></label>
@@ -1350,22 +1345,6 @@ function fillAutoCheckin() {
           : T('每 ') + (sc.intervalMin || 120) + T(' 分钟一轮');
   }
 }
-// 开机自启开关：/api/status.autostart（supported=false 时整段隐藏——桌面壳场景走托盘菜单）
-function fillAutostart() {
-  const a = state.status && state.status.autostart;
-  const field = $('cfg-autostart-field');
-  if (!a || a.supported === false) { field.style.display = 'none'; return; }
-  field.style.display = '';
-  $('cfg-autostart').checked = a.enabled === true;
-}
-$('cfg-autostart').addEventListener('change', async (e) => {
-  try {
-    await api('/api/settings', { method: 'PUT', json: { autostart: e.target.checked } });
-    await loadStatus();
-    fillAutostart();
-    toast(T('已保存'), true);
-  } catch (err) { toast(err.message, false); fillAutostart(); }
-});
 // 积分到期提醒（F4）：总开关 + 提前天数（1-14，默认 3）
 function fillReminder() {
   const cfg = state.reminderCfg || {};
@@ -4575,7 +4554,6 @@ $('btn-comp').addEventListener('click', async () => {
   await loadSettings();
   renderCompMenu();
   fillAutoCheckin();
-  fillAutostart();
   fillReminder();
   $('cfg-logs-display').value = logsDisplayDefault();
   $('cfg-wb-activity').checked = wbActOn();

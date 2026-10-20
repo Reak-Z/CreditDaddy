@@ -36,7 +36,6 @@ const HELP = `CreditDaddy — Qoder / WorkBuddy / ZCode / mirasim / 妙手 / Tra
   creditdaddy tools                                      列出工具注册表（tools.d）已注册工具与安装状态
   creditdaddy umid [install|remove]                      Qoder 设备身份组件（Linux / fnOS 国际版领取用）
   creditdaddy start [--port 47860] [--host 127.0.0.1]    后台启动（关掉终端也继续跑）
-  creditdaddy autostart [--on|--off|--status]            开机自启（Windows 计划任务，当前用户免管理员）
   creditdaddy stop                                       停止后台实例
   creditdaddy status                                     查看后台运行状态
   creditdaddy restart                                    重启后台实例
@@ -134,27 +133,6 @@ async function main() {
       console.log('  进程：pid', rec.pid, '· 端口', rec.port, '· 版本', rec.version || APP_VERSION);
       console.log('  日志：', backgroundLogFile());
       console.log('  停止：creditdaddy stop');
-      // 开机自启提示（Windows 计划任务未注册时）：桌面壳用户走托盘菜单，CLI 用户一条命令搞定
-      {
-        const { autostartStatus } = await import('../src/autostart.js');
-        const a = autostartStatus();
-        if (a.supported && !a.enabled) console.log('  开机自启：未开启（creditdaddy autostart --on）');
-      }
-      break;
-    }
-    case 'autostart': {
-      const { autostartStatus, setAutostart } = await import('../src/autostart.js');
-      const sub = args[1] || 'status';
-      const cur = autostartStatus();
-      if (!cur.supported) { console.log('· 当前平台不支持计划任务自启（桌面版请在托盘菜单开启「开机自动启动」）'); break; }
-      if (sub === 'status' || (!args.includes('--on') && !args.includes('--off'))) {
-        console.log(cur.enabled ? '✓ 开机自启已开启（登录时自动运行 creditdaddy start）' : '· 开机自启未开启');
-        if (!cur.enabled) console.log('  开启：creditdaddy autostart --on');
-        break;
-      }
-      const r = setAutostart(sub === 'on' || args.includes('--on'));
-      if (!r.ok) { console.error('✗', r.error); process.exit(1); }
-      console.log(r.ok && (sub === 'on' || args.includes('--on')) ? '✓ 已开启开机自启（Windows 计划任务 CreditDaddy，当前用户免管理员）' : '✓ 已关闭开机自启');
       break;
     }
     case 'stop': {
