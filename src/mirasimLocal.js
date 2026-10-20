@@ -26,6 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile, execFileSync, execSync } from 'node:child_process';
+import { anyProcRunningFast } from './winProc.js';
 
 const ENC_PREFIX = 'mrs1:';
 
@@ -235,10 +236,7 @@ export function candidateClientPath() {
 
 export function mirasimRunning() {
   if (process.platform !== 'win32') return false;
-  try {
-    const out = execSync('tasklist /FI "IMAGENAME eq Mirasim.exe" /NH', { windowsHide: true, encoding: 'utf8' });
-    return /mirasim\.exe/i.test(out);
-  } catch { return false; }
+  return anyProcRunningFast(['Mirasim.exe']);
 }
 
 const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);

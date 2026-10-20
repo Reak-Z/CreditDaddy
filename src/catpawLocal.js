@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { anyProcRunningFast } from './winProc.js';
 
 const EXE_NAME = '妙手.exe';
 
@@ -100,21 +101,10 @@ function writeCredential(accessToken) {
 
 // ── 本机探测 ──
 
-function decodeTasklist(buf) {
-  // Windows 控制台代码页（简体中文 GBK）输出，中文名需按 gbk 解码
-  try { return new TextDecoder('gbk').decode(buf); } catch { return buf.toString('utf8'); }
-}
-
 export function catpawRunning() {
   if (runningOverride !== null) return runningOverride;   // 测试钩子
   if (process.platform !== 'win32') return false;
-  try {
-    const out = decodeTasklist(execFileSync('tasklist.exe',
-      ['/FI', `IMAGENAME eq ${EXE_NAME}`, '/NH'],
-      { windowsHide: true, encoding: 'buffer', timeout: 8000 }));
-    // 无匹配时 tasklist 输出 INFO 行（中文系统为 GBK 代码页，见 decodeTasklist）
-    return out.toLowerCase().includes(EXE_NAME.toLowerCase()) && !/no tasks|没有找到|没有任务/i.test(out);
-  } catch { return false; }
+  return anyProcRunningFast([EXE_NAME]);
 }
 
 export function candidateClientPath() {

@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { anyProcRunningFast } from './winProc.js';
 import { fetchMiniMaxProfile } from './minimaxClient.js';
 
 export function minimaxHome() {
@@ -97,20 +97,12 @@ export function minimaxExePath() {
   return fs.existsSync(cand) ? cand : null;
 }
 
-const WIN_TASKLIST = () => {
-  try {
-    return execSync('tasklist /FI "IMAGENAME eq MiniMax Code.exe" /NH', { windowsHide: true, encoding: 'utf8' });
-  } catch {
-    return '';
-  }
-};
-
 /**
- * MiniMax Code 客户端是否正在运行
+ * MiniMax Code 客户端是否正在运行（全量进程表单次查询，见 winProc.anyProcRunningFast）
  */
 export function minimaxRunning() {
   if (process.platform !== 'win32') return false;
-  return /minimax code\.exe/i.test(WIN_TASKLIST());
+  return anyProcRunningFast(['MiniMax Code.exe']);
 }
 
 /**

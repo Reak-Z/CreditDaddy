@@ -504,6 +504,97 @@ function noteKeyMiss(remote) {
   keyFails.set(remote, rec);
 }
 
+// ── /api/status 探测族缓存（卡顿修复 2026-10-20）──
+// 守护进程与 Electron 主进程同事件循环：status 里的本机探测（detectQoderApps 的注册表
+// powershell / DPAPI 解密 / 四家的 tasklist 进程探测 / 各 currentXxx 文件读）含多个
+// **同步**外部进程调用，单次秒级（实测沙箱 8.8s、高负载真机同样达秒级）——面板 30s
+// 轮询 + 托盘 5min 轮询反复触发，把主进程占住 → 窗口拖动/点击/菜单卡顿。
+// 治理（最小变更，不动探测本身）：
+//   1) winProc.anyProcRunningFast 让同一轮的所有 Running 探测共享一次全量 tasklist（1.5s TTL）
+//   2) 本缓存把整个探测族结果存 5min（并发去重）：无操作时轮询全部命中缓存（微秒级）
+//   3) 写操作路由（添加/导入/删除/切换账号）后 bustProbeStatus() 立即可见最新状态
+// 观察类数据（客户端装没装/在不在跑）最多滞后 5min；账号列表/签到状态/调度倒计时
+// 本来就是实时字段，不走本缓存。
+const PROBE_TTL_MS = 5 * 60 * 1000;
+let probeCache = { at: 0, data: null };
+let probeInflight = null;
+
+/** 写操作后作废探测族缓存（账号增删/导入/切换客户端账号） */
+export function bustProbeStatus() {
+  probeCache = { at: 0, data: null };
+}
+
+/** 探测族全量计算（原 /api/status handler 的探测部分，语义不变） */
+async function collectProbeStatus(accounts) {
+  // Qoder 当前登录（DPAPI 解密结果在 qoderApp 内另有 1 分钟缓存）
+  const qoder = await qoderCurrentInfo();
+  // 旧账号没赶上「整份 auth 快照」的导入：本机 Qoder 有登录且账号库里有缺快照的同 uid 账号时，顺手回填（可逆、只在缺失时发生）
+  const needBackfill = qoder.backfill.length
+    && accounts.some((a) => (a.provider === 'qoder' || a.provider === 'qoder-cn')
+      && a.uid && !a.meta?.qoderAuth
+      && qoder.backfill.some((b) => b.provider === a.provider && String(b.uid) === String(a.uid)));
+  if (needBackfill) {
+    await withAccounts((list) => {
+      for (const b of qoder.backfill) {
+        const cur = list.find((a) => a.provider === b.provider && a.uid && b.uid && String(a.uid) === String(b.uid) && !a.meta?.qoderAuth);
+        if (cur) cur.meta = { ...(cur.meta || {}), qoderAuth: b.authJson, qoderAuthFile: b.file };
+      }
+    }).catch((e) => logger.warn('DAEMON', '回填 Qoder 登录快照失败:{err}', { err: e.message }));
+  }
+  // 妙手凭据文件只存 token：当前登录按 token 对齐账号库，避免每轮状态都打网关查 uid
+  const cpToken = currentCatpawToken();
+  const mmToken = currentMiniMaxToken();
+  const mmRecKey = currentMiniMaxRecordKey();
+  // 1) token match；2) record-key match (token 轮换时仍稳定);3) uid-cache fallback
+  let mmLiveUid = null;
+  if (mmToken) {
+    mmLiveUid = accounts.find((a) => a.provider === 'minimax' && a.token === mmToken)?.uid;
+  }
+  if (!mmLiveUid && mmRecKey) {
+    // record-key 匹配可能命中多个（历史脏数据里本机导入与浏览器登录挂过同一个 key），
+    // 此时用 uid 缓存的当前值收敛，避免随机取到「不是客户端当前登录」的那个账号。
+    const byRec = accounts.filter((a) => a.provider === 'minimax' && a.meta?.authRecordKey === mmRecKey);
+    if (byRec.length === 1) mmLiveUid = byRec[0].uid;
+    else if (byRec.length > 1) {
+      const mmCachedUid = currentMiniMaxUid();
+      mmLiveUid = byRec.find((a) => a.uid === mmCachedUid)?.uid || null;
+    }
+  }
+  if (!mmLiveUid) mmLiveUid = currentMiniMaxUid();
+  const traeDet = detectTrae();
+  return {
+    riskIdentity: riskIdentityAvailable(),
+    riskSource: riskIdentitySource(),
+    umid: umidInfo(),
+    platform: process.platform,
+    workbuddyCurrentUid: currentWorkbuddyUid(),
+    qoderCurrent: qoder.uids,
+    qoderClient: { installed: qoder.apps.some((x) => x.installed), signedIn: qoder.apps.some((x) => x.signedIn), running: qoderRunning() },
+    zcodeCurrentUid: currentZcodeUid(),
+    zcodeCurrentIdentity: currentZcodeIdentity(),
+    zcodeClient: (() => { const d = detectZcode(); return { installed: d.exists, signedIn: d.signedIn, running: zcodeRunning() }; })(),
+    mirasimCurrentUid: currentMirasimUid(),
+    mirasimClient: (() => { const d = detectMirasim(); return { installed: d.clientInstalled, signedIn: d.signedIn, running: d.running }; })(),
+    catpawCurrentUid: (cpToken && accounts.find((a) => a.provider === 'catpaw' && a.token === cpToken)?.uid) || null,
+    catpawClient: (() => { const d = detectCatpaw(); return { installed: d.clientInstalled, signedIn: d.signedIn, running: d.running }; })(),
+    traeCurrentUid: traeDet.uid,
+    traeClient: { installed: traeDet.clientInstalled, signedIn: traeDet.signedIn, running: traeDet.running },
+    minimaxCurrentUid: mmLiveUid,
+    minimaxClient: (() => { const d = detectMiniMax(); return { installed: d.installed, signedIn: d.signedIn, running: d.running }; })(),
+  };
+}
+
+/** 探测族读取（5min TTL + 并发去重；首次/过期后并发请求只跑一次全量） */
+async function probeStatus(accounts) {
+  if (probeCache.data && Date.now() - probeCache.at < PROBE_TTL_MS) return probeCache.data;
+  if (!probeInflight) {
+    probeInflight = collectProbeStatus(accounts)
+      .then((data) => { probeCache = { at: Date.now(), data }; return data; })
+      .finally(() => { probeInflight = null; });
+  }
+  return probeInflight;
+}
+
 async function handleApi(req, res, url) {
   if (!panelKeyRequired()) {
     const remote = (req.socket && req.socket.remoteAddress) || '';
@@ -551,6 +642,7 @@ async function handleApi(req, res, url) {
       logger.warn('DAEMON', '账号 {name} 校验失败:{err}', { name: account.name || account.id, err: account.verifyError });
     }
     logger.info('DAEMON', '添加账号 {name}({provider})', { name: account.name || account.id, provider: PROVIDER_LABEL[account.provider] });
+    bustProbeStatus();   // 账号库变了：/api/status 探测族里依赖账号的匹配（当前登录 uid 等）立即重算
     return json(res, 201, { account: publicAccount(account) });
   }
 
@@ -578,6 +670,7 @@ async function handleApi(req, res, url) {
     });
     if (!removed) return json(res, 404, { error: '账号不存在' });
     logger.info('DAEMON', '删除账号 {name}', { name: removed.name || removed.id });
+    bustProbeStatus();   // 账号库变了：探测族的「当前登录」匹配立即重算
     return json(res, 200, { ok: true });
   }
 
@@ -874,6 +967,9 @@ async function handleApi(req, res, url) {
     const accounts = await loadAccounts();
     const target = accounts.find((a) => a.id === switchMatch[1]);
     if (!target) return json(res, 404, { error: '账号不存在' });
+    // 切换会改客户端登录态（且防丢号路径先同步当前登录进账号库）→ 探测族作废；
+    // 入口统一 bust：切换失败也只是 5min 内多算一次全量（无害），换来所有分支路径无需逐个补。
+    bustProbeStatus();
     if (target.provider === 'zcode') {
       // 防丢号：先把 ZCode 当前登录（凭据 + config.json + 设备 ID）同步 / 保存进账号库，再覆盖
       const live = zcodeLiveAccount();
@@ -1026,7 +1122,10 @@ async function handleApi(req, res, url) {
     const body = await readBody(req).catch(() => ({}));
     if (!body?.sessionId) return json(res, 400, { error: '缺少 sessionId' });
     try {
-      return json(res, 200, await pollDeviceFlow(body.sessionId));
+      const out = await pollDeviceFlow(body.sessionId);
+      // 浏览器登录成功时账号已入库（authDevice 内 addAccount）→ 探测族的账号匹配重算
+      if (out?.status === 'ok') bustProbeStatus();
+      return json(res, 200, out);
     } catch (e) { return json(res, 500, { error: e.message }); }
   }
 
@@ -1538,6 +1637,7 @@ async function handleApi(req, res, url) {
     // Trae 的登录态是 15 项文件快照而非单个凭据文件，导入时就建一次快照，否则该账号不可切换
     if (account.provider === 'trae') traeSnapshotLive();
     logger.info('DAEMON', updated ? '已用本机凭据更新:{name}' : '从本机导入账号:{name}', { name: account.name || account.id });
+    bustProbeStatus();   // 账号库变了：探测族的「当前登录」匹配立即重算
     return json(res, updated ? 200 : 201, { account: publicAccount(account), updated });
   }
 
@@ -1638,42 +1738,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/status' && method === 'GET') {
     const accounts = await loadAccounts();
     const state = await loadState();
-    // Qoder 当前登录（面板轮询每 30s 打一次，DPAPI 解密结果缓存 1 分钟）
-    const qoder = await qoderCurrentInfo();
-    // 旧账号没赶上「整份 auth 快照」的导入：本机 Qoder 有登录且账号库里有缺快照的同 uid 账号时，顺手回填（可逆、只在缺失时发生）
-    const needBackfill = qoder.backfill.length
-      && accounts.some((a) => (a.provider === 'qoder' || a.provider === 'qoder-cn')
-        && a.uid && !a.meta?.qoderAuth
-        && qoder.backfill.some((b) => b.provider === a.provider && String(b.uid) === String(a.uid)));
-    if (needBackfill) {
-      await withAccounts((list) => {
-        for (const b of qoder.backfill) {
-          const cur = list.find((a) => a.provider === b.provider && a.uid && b.uid && String(a.uid) === String(b.uid) && !a.meta?.qoderAuth);
-          if (cur) cur.meta = { ...(cur.meta || {}), qoderAuth: b.authJson, qoderAuthFile: b.file };
-        }
-      }).catch((e) => logger.warn('DAEMON', '回填 Qoder 登录快照失败:{err}', { err: e.message }));
-    }
-    // 妙手凭据文件只存 token：当前登录按 token 对齐账号库，避免每轮状态都打网关查 uid
-    const cpToken = currentCatpawToken();
-    const mmToken = currentMiniMaxToken();
-    const mmRecKey = currentMiniMaxRecordKey();
-    // 1) token match；2) record-key match (token 轮换时仍稳定);3) uid-cache fallback
-    let mmLiveUid = null;
-    if (mmToken) {
-      mmLiveUid = accounts.find((a) => a.provider === 'minimax' && a.token === mmToken)?.uid;
-    }
-    if (!mmLiveUid && mmRecKey) {
-      // record-key 匹配可能命中多个（历史脏数据里本机导入与浏览器登录挂过同一个 key），
-      // 此时用 uid 缓存的当前值收敛，避免随机取到「不是客户端当前登录」的那个账号。
-      const byRec = accounts.filter((a) => a.provider === 'minimax' && a.meta?.authRecordKey === mmRecKey);
-      if (byRec.length === 1) mmLiveUid = byRec[0].uid;
-      else if (byRec.length > 1) {
-        const mmCachedUid = currentMiniMaxUid();
-        mmLiveUid = byRec.find((a) => a.uid === mmCachedUid)?.uid || null;
-      }
-    }
-    if (!mmLiveUid) mmLiveUid = currentMiniMaxUid();
-    const traeDet = detectTrae();
+    const probe = await probeStatus(accounts);   // 探测族缓存（同步外部调用秒级，见 collectProbeStatus 注释）
     return json(res, 200, {
       ok: true,
       app: 'CreditDaddy',
@@ -1693,24 +1758,7 @@ async function handleApi(req, res, url) {
       scheduler: await getSchedulerInfo(),
       // F4 到期提醒（脱敏标量）：面板 nav 红点 + 提醒卡 + 桌面壳通知的数据源
       expiring: await dueReminders(),
-      riskIdentity: riskIdentityAvailable(),
-      riskSource: riskIdentitySource(),
-      umid: umidInfo(),
-      platform: process.platform,
-      workbuddyCurrentUid: currentWorkbuddyUid(),
-      qoderCurrent: qoder.uids,
-      qoderClient: { installed: qoder.apps.some((x) => x.installed), signedIn: qoder.apps.some((x) => x.signedIn), running: qoderRunning() },
-      zcodeCurrentUid: currentZcodeUid(),
-      zcodeCurrentIdentity: currentZcodeIdentity(),
-      zcodeClient: (() => { const d = detectZcode(); return { installed: d.exists, signedIn: d.signedIn, running: zcodeRunning() }; })(),
-      mirasimCurrentUid: currentMirasimUid(),
-      mirasimClient: (() => { const d = detectMirasim(); return { installed: d.clientInstalled, signedIn: d.signedIn, running: d.running }; })(),
-      catpawCurrentUid: (cpToken && accounts.find((a) => a.provider === 'catpaw' && a.token === cpToken)?.uid) || null,
-      catpawClient: (() => { const d = detectCatpaw(); return { installed: d.clientInstalled, signedIn: d.signedIn, running: d.running }; })(),
-      traeCurrentUid: traeDet.uid,
-      traeClient: { installed: traeDet.clientInstalled, signedIn: traeDet.signedIn, running: traeDet.running },
-      minimaxCurrentUid: mmLiveUid,
-      minimaxClient: (() => { const d = detectMiniMax(); return { installed: d.installed, signedIn: d.signedIn, running: d.running }; })(),
+      ...probe,   // 探测族（detect*/currentXxx/DPAPI/注册表/tasklist）：5min 缓存，写操作后 bust
       keyRequired: panelKeyRequired(),
     });
   }
@@ -1806,6 +1854,7 @@ async function handleApi(req, res, url) {
     const r = await importAccounts(parsed.accounts);
     const skipped = r.skipped + parsed.skipped;
     logger.info('DAEMON', '导入完成({source}):新增 {added},续期 {updated},跳过 {skipped}', { source: parsed.source, added: r.added, updated: r.updated, skipped });
+    if (r.added || r.updated) bustProbeStatus();   // 账号库变了：探测族的「当前登录」匹配立即重算
     return json(res, 200, { added: r.added, updated: r.updated, skipped, source: parsed.source });
   }
 

@@ -15,6 +15,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dataDir } from './store.js';
+import { anyProcRunningFast } from './winProc.js';
 
 const APP_NAMES = ['TRAE SOLO CN', 'Trae CN', 'TRAE SOLO', 'Trae'];
 const EXE_NAMES = ['TRAE SOLO CN.exe', 'Trae CN.exe', 'TRAE SOLO.exe', 'Trae.exe'];
@@ -101,24 +102,13 @@ export function readLiveAuth() {
   return { dataDir: dir, deviceId: deviceIdOf(storage), auth };
 }
 
-const decodeTasklist = (buf) => {
-  try { return new TextDecoder('gbk').decode(buf); } catch { return buf.toString('utf8'); }
-};
-
 let runningOverride = null;
 
-/** 任一变体的 Trae 客户端是否在运行 */
+/** 任一变体的 Trae 客户端是否在运行（全量进程表单次查询，见 winProc.anyProcRunningFast） */
 export function traeRunning() {
   if (runningOverride !== null) return runningOverride;
   if (process.platform !== 'win32') return false;
-  for (const exe of EXE_NAMES) {
-    try {
-      const out = decodeTasklist(execFileSync('tasklist.exe', ['/FI', `IMAGENAME eq ${exe}`, '/NH'],
-        { windowsHide: true, encoding: 'buffer', timeout: 8000 }));
-      if (out.toLowerCase().includes(exe.toLowerCase()) && !/no tasks|没有找到|没有任务/i.test(out)) return true;
-    } catch { /* 下一个变体 */ }
-  }
-  return false;
+  return anyProcRunningFast(EXE_NAMES);
 }
 
 export function candidateClientPath() {
